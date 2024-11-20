@@ -1,1 +1,21 @@
-To compile this program, ensure you have all required libraries installed. ()
+To compile this program, ensure you have all required libraries installed. (Although, most are standard)
+
+
+Execute the following shell commands in the directory of the script:
+
+g++ -std=c++20 -o ./shred ./shred.cpp
+
+If this throws an error, you can try:
+
+g++ -std=c++20 -o ./shred ./shred.cpp -lstdc++fs
+
+Otherwise, it may be beneficial to consult ChatGPT with a similar prompt:
+  Can you please correct this c++ compilation error "
+    $g++ -std=c++20 -o ./shred ./shred.cpp -lstdc++fs
+    ERROR: ---
+    ERROR: ---
+" (replace with your command and its output)
+
+Then, follow its instructions to hopefully rectify the situation.
+
+Happy Shredding!
