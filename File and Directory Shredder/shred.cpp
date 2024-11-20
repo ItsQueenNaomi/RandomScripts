@@ -668,7 +668,6 @@ To-do:
 #include <string> // String manipulation
 #include <vector> // Storing buffers
 #include <cstring> // for std::memcpy
-#include <sys/stat.h> // to determine file type
 #include <thread> // for sleeping (std::this_thread::sleep_for)
 #include <algorithm> // for std::transform
 #ifdef __linux__
@@ -918,8 +917,7 @@ int overwriteWithRandomData(std::fstream& file, std::uintmax_t fileSize) {
 
 // Function to check if a path is a regular file
 bool isRegularFile(const fs::path& file) {
-    struct stat fileStatus;
-    return (stat(file.c_str(), &fileStatus) == 0) && S_ISREG(fileStatus.st_mode);
+    return fs::is_regular_file(file);
 }
 
 // Function to shred a single file with specified overwrite passes
