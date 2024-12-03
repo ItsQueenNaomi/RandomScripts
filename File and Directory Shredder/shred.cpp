@@ -656,6 +656,7 @@ Changelog (since v1):
     -> Improved verification for shredding and improved logging
     -> Added internal (not advertised) flag to print some development information ('-i'nternal)
     -> Added excessive comments to appease any readers and the coding gods
+    -> Added more comments and made it so it prints the end time regardless of verbosity
 To-do:
     -> Nothing.
 */
@@ -705,7 +706,7 @@ enum logLevel { // Define valid log levels
 
 void logMessage(logLevel type, const std::string& message) { // Function to log messages with timestamps
     std::string level;
-    if (type == INFO) { level = "INFO"; }
+    if (type == INFO) { level = "INFO"; } // To print the actual word rather than the numerical representation.
     if (type == ERROR) { level = "ERROR"; }
     if (type == WARNING) { level = "WARNING"; }
     if (type == DRY_RUN) { level = "DRY_RUN"; }
@@ -781,12 +782,6 @@ void help(char* argv[]) {
 
     std::cerr << "    " << argv[0] << " -d file1.txt file2.txt\n";
     std::cerr << "        Performs a dry run to show what would be shredded without actual deletion.\n";
-    
-    std::cerr << "ABOUT\n";
-    std::cerr << "    File and  Directory Shredder Copyright (C) 2024 Aristotle Daskaleas\n"
-    std::cerr << "    This program comes with ABSOLUTELY NO WARRANTY.\n"
-    std::cerr << "    This is free software, and you are welcome to redistribute it under certain conditions.\n"
-    std::cerr << "    For the license and more information visit <https://www.gnu.org/licenses/> (GNU General Public License)\n\n"
 }
 
 std::uintmax_t getOptimalBlockSize() { // This function returns the retrieves blocksize defined in the kernel for the current OS.
@@ -814,7 +809,7 @@ std::uintmax_t getOptimalBlockSize() { // This function returns the retrieves bl
     }
     return blockSize; // blockSize is the optimal block size
 #else
-    logMessage(INFO, "OS-type could not be determined. Using default block size (4096)")
+    logMessage(INFO, "OS type could not be determined. Using default block size (4096)")
     return 4096;  // Default block size for unsupported platforms
 #endif
 }
@@ -902,7 +897,7 @@ int overwriteWithRandomData(std::fstream& file, std::uintmax_t fileSize) {
             std::uintmax_t readSize = std::min(bufferSize, fileSize - offset);
             file.read(verifyBuffer.data(), readSize);
 
-            // Check if the data is consistent with secure erasure (e.g., all zeroes after overwrite)
+            // Check if the data is consistent with erasure (e.g., all zeroes after overwrite)
             if (!std::equal(verifyBuffer.begin(), verifyBuffer.begin() + readSize, lastRandomData.begin() + offset)) {
                 if (verbose) { std::cerr << "Verification failed at offset: " << offset << '\n'; }
                 verificationFailed = true;
@@ -949,39 +944,39 @@ bool shredFile(const fs::path& filePath) {
         std::fstream file; // fstream instead ofstream to prevent appending
         int attempts = 0;
 
-        while (attempts < 10) { // Attempts to open file 10 times before quitting (relic now since disimplementation of multithreading)
+        while (attempts < 10) { // Attempts to open file 10 times before quitting (relic now since obsolescense of multithreading [functionality impacts])
             file.open(filePath, std::ios::binary | std::ios::in | std::ios::out);
-            if (file) {
+            if (file) { // If file opens, continue
                 break;
-            } else {
+            } else { // Otherwise, log the attempt, wait 1/2 second, and try again.
                 attempts++;
-                logMessage(ERROR, "Failed to open file '" + filePath.string() + "' for overwriting.");
+                logMessage(WARNING, "Failed to open file '" + filePath.string() + "' for overwriting.");
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
         }
 
-        if (!file) {
+        if (!file) { // After the attempts if the file still isn't open, log the error and exit function
             logMessage(ERROR, "Failed to open file '" + filePath.string() + "' after 10 attempts. Skipping.");
             return false;
         }
 
-        for (int i = 0; i < overwriteCount; ++i) { // Call shredder for amount specified
-            file.seekp(0, std::ios::beg);
+        for (int i = 0; i < overwriteCount; ++i) { // Call shredder for amount specified in overwriteCount
+            file.seekp(0, std::ios::beg); // Move to beginning of buffer (file)
             if (overwriteWithRandomData(file, fileSize) == 1) {
-                verificationFailed = 1;
+                verificationFailed = 1; // Overwrite function returns 1 if verification fails
             }
             logMessage(INFO, "Completed overwrite pass " + std::to_string(i + 1) + " for file '" + filePath.string() + "'."); // Prints pass count
             std::cout << "Progress: " << std::fixed << std::setprecision(1)  // Percent-style progress meter
                       << ((i + 1) / static_cast<float>(overwriteCount)) * 100 << "%\r" << std::flush;
         }
 
-        if (verificationFailed) { logMessage(WARNING, "Overwrite verification failed for '" + filePath.string() + "'"); }
-        file.close();
+        if (internal && verificationFailed || verbose && verificationFailed) { logMessage(WARNING, "Overwrite verification failed for '" + filePath.string() + "'"); } // Prints verification failure, only if verbose because overwrite function says it too.
+        file.close(); // Close file, if completed
         
         if (!keep_files) { // Delete file after shredding (if not keeping)
             if (std::remove(filePath.c_str()) == 0) {
                 if (verify) { logMessage(INFO, "File '" + filePath.string() + "' shredded, verified, and deleted."); }
-                if (!verify) { logMessage(INFO, "File '" + filePath.string() +"' shredded and deleted without verification."); }
+                    else if (!verify) { logMessage(INFO, "File '" + filePath.string() +"' shredded and deleted without verification."); }
             } else {
                 logMessage(ERROR, "Failed to delete file '" + filePath.string() + "'.");
                 return false;
@@ -1013,7 +1008,7 @@ void processPath(const fs::path& path) {
                     }
                 }
 
-                if (!keep_files && fs::is_empty(path)) {
+                if (!keep_files && fs::is_empty(path) && !dry_run) { // Processes if not keeping files, is a legitimate run, and the directory is empty
                     if (fs::remove(path)) { // Remove directory after after successful deletion of all files
                         logMessage(INFO, "Directory '" + path.string() + "' successfully deleted.");
                     } else {
@@ -1021,18 +1016,21 @@ void processPath(const fs::path& path) {
                     }
                 } else { // Directory wasn't deleted: keep files or directory is not empty
                     if (keep_files) { logMessage(WARNING, "Directory '" + path.string() + "' was not deleted (keep_files flag)."); }
-                        else if (!fs::is_empty(path)) { logMessage(WARNING, "Directory '" + path.string() + "' is not empty. Skipping deletion."); }
+                        else if (!fs::is_empty(path) && !dry_run) { logMessage(WARNING, "Directory '" + path.string() + "' is not empty. Skipping deletion."); }
+                        else if (dry_run) { logMessage(DRY_RUN, "Directory '" + path.string() + "' would be shredded."); }
                 }
             } else { // No recursive = No shredding
                 logMessage(WARNING, "'" + path.string() + "' is a directory. Use -r for recursive shredding.");
             }
         } else if (fs::is_regular_file(path)) { // For files to shred individually
             shredFile(path);
-        } else { // This file trash
+        } else { // This file, trash
             logMessage(ERROR, "'" + path.string() + "' is not a valid file or directory.");
         }
-    } catch (const fs::filesystem_error& e) {
+    } catch (const fs::filesystem_error& e) { // Expose filesystem errors to the user
         logMessage(ERROR, "Filesystem error: " + std::string(e.what()));
+    } catch (const std::runtime_error& e) { // Expose other errors
+        logMessage(ERROR, "An error has occured: " + std::string(e.what()));
     }
 }
 
@@ -1047,7 +1045,7 @@ int main(int argc, char* argv[]) {
         std::string arg = argv[i]; // Initializes argument position to iteration
 
         if (arg[0] == '-') { // Searches for a word starting with a hyphen
-            for (size_t j = 1; j < arg.size(); ++j) { // Gets size of word and iterates it
+            for (size_t j = 1; j < arg.size(); ++j) { // Gets size of word and iterates the individual letter(s)
                 char flag = arg[j]; // Splits all letters following a '-'
                 if (validFlags.find(flag) != std::string::npos) { // Validates all characters from validFlags
                     switch (flag) { // Checks for valid flags and change program's operation accordingly
@@ -1085,31 +1083,42 @@ int main(int argc, char* argv[]) {
     std::tm local_tm = *std::localtime(&start_time_t); // Converts it to local time
 
     std::cout << "Beginning Shred at: " << std::put_time(&local_tm, "%H:%M:%S") << std::endl; // Prints start time to user terminal
+
     if (internal) { // Funny extra feature for people in the know about this flag (outputs parameters, files, and a confirmation)
+        // Prints set options
         std::cout << "Parameters:: Overwrites: " << overwriteCount << ", Recursive: " << recursive << ", Keep_files: " << keep_files << ", Follow_symlinks: " << follow_symlinks << ", Secure_mode " << secure_mode << ", Dry_run: " << dry_run << ", Verify: " << verify << std::endl;
         std::cout << "Files: " << std::endl;
+
         for (const auto& filePath : fileArgs) {
-            std::cout << filePath << std::endl;
+            std::cout << filePath << std::endl; // Prints file names
         } std::cout << std::endl;
+
         std::cout << "Continue? (y/N)" << std::endl;
-        std::string reply;
-        std::getline(std::cin, reply); // Idk why getline is better that cin >> reply but ok
-        std::transform(reply.begin(), reply.end(), reply.begin(), ::tolower); // Case insensitivty
+        std::string reply; // Declare reply variable for confirmation
+        std::getline(std::cin, reply); // getline may be extra, since input is one character or 2-3 letters (not line)
+        std::transform(reply.begin(), reply.end(), reply.begin(), ::tolower); // Transforms case into lowercase
+
         if (reply == "y") { } else if (reply == "yes") { } else { return 3; } // Unless 'y' or 'yes' is specified, we're done
     }
 
-    for (const auto& filePath : fileArgs) { // Process each provided path
+    for (const auto& filePath : fileArgs) { // Process each provided path (main function)
         processPath(filePath);
     }
 
+    auto endT = std::chrono::system_clock::now(); // Gets end time (for printing at end)
     auto endTime = std::chrono::high_resolution_clock::now(); // Retrieves time after program has completed
     std::chrono::duration<double> duration = endTime - startTime; // Calculates total run time in seconds
 
-    if (!recursive) { // Will print at the end (if verbose) runtime statistic
+    if (!recursive) { // Will print at the end (if verbose) [runtime statistics]
         logMessage(INFO, "File shredding process completed. " + std::to_string(duration.count()) + " seconds.");
     } else { // Specifies mode
         logMessage(INFO, "Recursive shredding process completed. " + std::to_string(duration.count()) + " seconds.");
     }
 
+    std::time_t EndTime = std::chrono::system_clock::to_time_t(endT); // Converts end time to printable format
+    std::tm localEndTime = *std::localtime(&EndTime); // Gets time in local timezone
+
+    std::cout << "Shred completed at: " << std::put_time(&localEndTime, "%H:%M:%S") << std::endl;
+    
     return 0; // Success!
 }
