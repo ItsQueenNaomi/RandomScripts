@@ -639,7 +639,7 @@ copy of the Program in return for a fee.
 */
 /*
 File and Directory Shredder
-Version: 3b
+Version: 4
 Author: Aristotle Daskaleas (2024)
 Changelog (since v1):
     -> Removed multithreading due to file handling conflicts
@@ -657,6 +657,8 @@ Changelog (since v1):
     -> Added internal (not advertised) flag to print some development information ('-i'nternal)
     -> Added excessive comments to appease any readers and the coding gods
     -> Added more comments and made it so it prints the end time regardless of verbosity
+    -> Modified flag handling function ('-n') so numbers can be specified in the middle of flags (e.g., -kvn50sf instead of requiring -kvsfn50)
+    -> Added a metadata handler for files, which hopefully further percludes data recovery.
 To-do:
     -> Nothing.
 */
@@ -1091,10 +1093,34 @@ int main(int argc, char* argv[]) {
                     // Checks for valid flags and change program's operation accordingly
                     switch (flag) { // Set flag variable to the letter and continue
                         case 'h': help(argv); return 2; // Gets help and exits
-                        // Changes overwrite count
-                        case 'n': if (arg.size() > j + 1) { try { overwriteCount = std::stoi(arg.substr(j + 1)); j = arg.size(); } catch (...) {std::cerr << "ERROR: '-n' flag requires a positive integer\n"; return 1;} }
-                                else if (i + 1 < argc) { try { overwriteCount = std::stoi(argv[++i]); } catch (...) {std::cerr << "ERROR: '-n' flag requires a positive integer\n"; return 1;} }
-                                else { std::cerr << "ERROR: '-n' flag requires a positive integer\n"; return 1; } break;
+                        case 'n': { // Changes overwrite count
+                            size_t start = j + 1; // Gets start of number
+                            size_t end = start; // To find the end of the number
+                            while (end < arg.size() && std::isdigit(arg[end])) {
+                                ++end; // Sets end to position of the integer's last character
+                            }
+
+                            if (start < end) { // If number is found after n (no space)
+                                try {
+                                    overwriteCount = std::stoi(arg.substr(start, end - start)); // Extracts integer
+                                    j = end - 1; // Move cursor to end of integer
+                                } catch (...) {
+                                    std::cerr << "ERROR: '-n' flag requires a positive integer\n";
+                                    return 1;
+                                }
+                            } else if (i + 1 < argc) { // If there is a space, look in next argument
+                                try {
+                                    overwriteCount = std::stoi(argv[++i]); // Increments i and moves to the next argument
+                                } catch (...) {
+                                    std::cerr << "ERROR: '-n' flag requires a positive integer\n";
+                                    return 1;
+                                }
+                            } else {
+                                std::cerr << "ERROR: '-n' flag requires a positive integer\n";
+                                return 1;
+                            }
+                            break;
+                        }
                         case 'r': recursive = true; break;
                         case 'k': keep_files = true; break;
                         case 'v': verbose = true; break;
