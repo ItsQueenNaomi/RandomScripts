@@ -667,6 +667,7 @@ To-do:
 #include <random> // For overwriting
 #include <chrono> // For clock
 #include <string> // String manipulation
+#include <mutex> // For secure file name generation
 #include <vector> // Storing buffers
 #include <cstring> // for std::memcpy
 #include <thread> // for sleeping (std::this_thread::sleep_for)
@@ -696,6 +697,8 @@ bool internal = false; // boolean to indicate whether scripting information is r
 bool verificationFailed; // Global boolean to determine if verification failed (used in multiple functions)
 
 const std::string validFlags = "nrkvfsdchi";
+
+std::mutex fileMutex; // Defines file name generation variable
 
 enum logLevel { // Define valid log levels
     INFO, // Level to inform with verbosity (i.e., every action)
@@ -814,8 +817,21 @@ std::uintmax_t getOptimalBlockSize() { // This function returns the retrieves bl
 #endif
 }
 
+std::string generateRandomFileName(size_t length = 32) {
+    static const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    static thread_local std::mt19937 generator(std::random_device{}());
+    std::uniform_int_distribution<> dist(0, sizeof(charset) - 2);
+
+    std::string randomName;
+
+    for (size_t i = 0; i < length; ++i ) {
+        randomName += charset[dist(generator)];
+    }
+    return randomName;
+}
+
 // Function to overwrite files in chunks
-int overwriteWithRandomData(std::fstream& file, std::uintmax_t fileSize) {
+int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize) {
     const std::uintmax_t bufferSize = getOptimalBlockSize();  // Get the block size
     std::vector<char> buffer(bufferSize); // Set buffersize to retrieved value (block size)
 
@@ -967,7 +983,7 @@ bool shredFile(const fs::path& filePath) {
 
         for (int i = 0; i < overwriteCount; ++i) { // Call shredder for amount specified in overwriteCount
             file.seekp(0, std::ios::beg); // Move to beginning of buffer (file)
-            if (overwriteWithRandomData(file, fileSize) == 1) {
+            if (overwriteWithRandomData(filePath.string(), file, fileSize) == 1) {
                 verificationFailed = 1; // Overwrite function returns 1 if verification fails
             }
             logMessage(INFO, "Completed overwrite pass " + std::to_string(i + 1) + " for file '" + filePath.string() + "'."); // Prints pass count
@@ -975,10 +991,24 @@ bool shredFile(const fs::path& filePath) {
                       << ((i + 1) / static_cast<float>(overwriteCount)) * 100 << "%\r" << std::flush;
         }
 
-        if (internal && verificationFailed || verbose && verificationFailed) { logMessage(WARNING, "Overwrite verification failed for '" + filePath.string() + "'"); } // Prints verification failure, only if verbose because overwrite function says it too.
+        if (internal && verificationFailed || verbose && verificationFailed) { logMessage(WARNING, "Overwrite verification failed for '" + filePath.string() + "' Skipping deletion."); } // Prints verification failure, only if verbose because overwrite function says it too.
         file.close(); // Close file, if completed
         
-        if (!keep_files) { // Delete file after shredding (if not keeping)
+        if (!keep_files && !verificationFailed) { // Delete file after shredding (if not keeping)
+            try {
+                std::unique_lock<std::mutex> lock(fileMutex); // Acquire file lock
+
+                fs::permissions(filePath, fs::perms::none); // Remove file permissions
+
+                std::string randomFileName = generateRandomFileName(); // Get a random name
+                std::string obfuscatedPath = fs::temp_directory_path() / randomFileName; // Make a temp path and add the random name
+                fs::rename(filePath, obfuscatedPath); // Move the file to the new temp directory with the random name
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Sleep to wait for new metadata to propagate
+            } catch (...) {
+                std::cerr << "An error has occured while obfuscating metadata on the file '" << filePath.string() << "'" << std::endl;
+            }
+
             if (std::remove(filePath.c_str()) == 0) {
                 if (verify) { logMessage(INFO, "File '" + filePath.string() + "' shredded, verified, and deleted."); }
                     else if (!verify) { logMessage(INFO, "File '" + filePath.string() +"' shredded and deleted without verification."); }
@@ -1058,7 +1088,8 @@ int main(int argc, char* argv[]) {
             for (size_t j = 1; j < arg.size(); ++j) { // Gets size of word and iterates the individual letter(s)
                 char flag = arg[j]; // Splits all letters following a '-'
                 if (validFlags.find(flag) != std::string::npos) { // Validates all characters from validFlags
-                    switch (flag) { // Checks for valid flags and change program's operation accordingly
+                    // Checks for valid flags and change program's operation accordingly
+                    switch (flag) { // Set flag variable to the letter and continue
                         case 'h': help(argv); return 2; // Gets help and exits
                         // Changes overwrite count
                         case 'n': if (arg.size() > j + 1) { try { overwriteCount = std::stoi(arg.substr(j + 1)); j = arg.size(); } catch (...) {std::cerr << "ERROR: '-n' flag requires a positive integer\n"; return 1;} }
@@ -1092,8 +1123,6 @@ int main(int argc, char* argv[]) {
     std::time_t start_time_t = std::chrono::system_clock::to_time_t(startT); // Retrieves current time
     std::tm local_tm = *std::localtime(&start_time_t); // Converts it to local time
 
-    std::cout << "Beginning Shred at: " << std::put_time(&local_tm, "%H:%M:%S") << std::endl; // Prints start time to user terminal
-
     if (internal) { // Funny extra feature for people in the know about this flag (outputs parameters, files, and a confirmation)
         // Prints set options
         std::cout << "Parameters:: Overwrites: " << overwriteCount << ", Recursive: " << recursive << ", Keep_files: " << keep_files << ", Follow_symlinks: " << follow_symlinks << ", Secure_mode " << secure_mode << ", Dry_run: " << dry_run << ", Verify: " << verify << std::endl;
@@ -1110,6 +1139,8 @@ int main(int argc, char* argv[]) {
 
         if (reply == "y") { } else if (reply == "yes") { } else { return 3; } // Unless 'y' or 'yes' is specified, we're done
     }
+
+    std::cout << "Beginning Shred at: " << std::put_time(&local_tm, "%H:%M:%S") << std::endl; // Prints start time to user terminal
 
     for (const auto& filePath : fileArgs) { // Process each provided path (main function)
         processPath(filePath);
