@@ -921,7 +921,12 @@ bool shredFile(const fs::path& filePath) {
     try {
         verificationFailed = 0;
         if (dry_run) {
+            if (fs::is_symlink(filePath) && !follow_symlinks) {
+                logMessage(DRY_RUN, "Symlink file '" + filePath.string() + "' would not be shredded.");
+            } else {
             logMessage(DRY_RUN, "Simulating shredding file '" + filePath.string() + "'.");
+            }
+            
             return true;
         }
 
@@ -989,6 +994,9 @@ bool shredFile(const fs::path& filePath) {
     } catch (const fs::filesystem_error& e) {
         logMessage(ERROR, "Filesystem error: " + std::string(e.what()));
         return false;
+    } catch (...) {
+        logMessage(ERROR, "An unknown error occured in shredFile()");
+        return false;
     }
 }
 
@@ -1031,6 +1039,8 @@ void processPath(const fs::path& path) {
         logMessage(ERROR, "Filesystem error: " + std::string(e.what()));
     } catch (const std::runtime_error& e) { // Expose other errors
         logMessage(ERROR, "An error has occured: " + std::string(e.what()));
+    } catch (...) {
+        logMessage(ERROR, "An unknown error has occured in processPath()");
     }
 }
 
@@ -1051,8 +1061,8 @@ int main(int argc, char* argv[]) {
                     switch (flag) { // Checks for valid flags and change program's operation accordingly
                         case 'h': help(argv); return 2; // Gets help and exits
                         // Changes overwrite count
-                        case 'n': if (arg.size() > j + 1) { overwriteCount = std::stoi(arg.substr(j + 1)); j = arg.size(); }
-                                else if (i + 1 < argc) { overwriteCount = std::stoi(argv[++i]); }
+                        case 'n': if (arg.size() > j + 1) { try { overwriteCount = std::stoi(arg.substr(j + 1)); j = arg.size(); } catch (...) {std::cerr << "ERROR: '-n' flag requires a positive integer\n"; return 1;} }
+                                else if (i + 1 < argc) { try { overwriteCount = std::stoi(argv[++i]); } catch (...) {std::cerr << "ERROR: '-n' flag requires a positive integer\n"; return 1;} }
                                 else { std::cerr << "ERROR: '-n' flag requires a positive integer\n"; return 1; } break;
                         case 'r': recursive = true; break;
                         case 'k': keep_files = true; break;
