@@ -9,6 +9,13 @@ If this throws an error, you can try:
 
 g++ -std=c++20 -o ./shred ./shred.cpp -lstdc++fs
 
+If you would like to include the OpenSSL library for more efficient file verification:
+
+g++ -std=c++20 -o ./shred ./shred.cpp -DOPENSSL_FOUND -lssl -lcrypto
+
+This will define OPENSSL_FOUND, so the script will include the special functions. Link ssl and cryptography libraries.
+If there is not a global installation, include the library path and includes path (-L/path & -I/path)
+
 Otherwise, it may be beneficial to consult ChatGPT with a similar prompt:
   Can you please correct this c++ compilation error "
     $g++ -std=c++20 -o ./shred ./shred.cpp -lstdc++fs
