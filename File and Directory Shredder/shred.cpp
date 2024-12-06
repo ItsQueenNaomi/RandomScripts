@@ -17,7 +17,7 @@
 */
 /*
 File and Directory Shredder
-Version: 5a
+Version: 6b
 Author: Aristotle Daskaleas (2024)
 Changelog (since v1):
     -> Removed multithreading due to file handling conflicts
@@ -43,8 +43,15 @@ Changelog (since v1):
     -> Added hashing for verification for systems with OpenSSL
     -> Improved error handling and logging
     -> Implemented and improved errorExit() function
+    -> Removed redundant declaration for verificationFailed
+    -> Added more comments (namely for the new code I forgot to comment)
+    -> Added compilation flag section for easy reference, to streamline compliation
+    -> Added write permission checking function
+    -> Improved OpenSSL functions (moved away from the depreciated functions)
 To-do:
     -> Nothing.
+
+Current full compilation flag: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto
 */
 #include <iostream> // For console logging
 #include <fstream> // For file operations (writing)
@@ -58,21 +65,26 @@ To-do:
 #include <cstring> // for std::memcpy
 #include <thread> // for sleeping (std::this_thread::sleep_for)
 #include <algorithm> // for std::transform
+#include <unistd.h>
 #ifdef __linux__
 #include <sys/statvfs.h> // Linux library that allows for block size retrieval
 #include <sys/xattr.h> // For OS-specific file operations
 #include <unistd.h> // For filesystem syncing
+#include <sys/stat.h>
 #elif _WIN32
 #include <windows.h> // Windows library that allows for block size retrieval
 #include <winbase.h> // For file deletion
+#include <aclAPI.h> // For file permissions
+#include <sddl.h>
 #elif __APPLE__
 #include <sys/sysctl.h> // Defines required MacOS libraries that allow for block size retrieval
 #include <sys/mount.h>
 #include <sys/xattr.h> // Same as the one above
 #include <unistd.h> // For filesystem syncing
+#include <sys/stat.h>
 #endif
 #ifdef OPENSSL_FOUND
-#include <openssl/sha.h> // For hashing
+#include <openssl/evp.h> // For hashing
 #endif
 
 namespace fs = std::filesystem; // Makes linking commands from the 'std::filesystem' easier
@@ -88,9 +100,11 @@ bool dry_run = false; // boolean to indicate if any files will actually be shred
 bool verify = true; // boolean to indicate verification after shredding
 bool internal = false; // boolean to indicate whether scripting information is revealed
 
-bool verificationFailed; // Global boolean to determine if verification failed (used in multiple functions)
+bool failedToRetrievePermissions = false; // Global boolean to indicate if permissions were successfully retrieved
+bool bufferSizePrinted = false; // Global boolean to indicate if the buffer size was already printed
+bool verificationFailed = false; // Global boolean to determine if verification failed (used in multiple functions)
 
-const std::string validFlags = "nrkvfsdchi";
+const std::string validFlags = "nrkvfsdchi"; // Indicated valid program flags
 
 std::mutex fileMutex; // Defines file name generation variable
 
@@ -102,12 +116,13 @@ enum logLevel { // Define valid log levels
 };
 
 // Prototype declarations for refactoring
-int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize);
-#ifdef OPENSSL_FOUND
-    int verifyWithHash(const std::string& filePath, const std::vector<char>& expectedData);
+#ifdef OPENSSL_FOUND // Only declares these prototypes if compiling with OpenSSL (since it's required)
+    int verifyWithHash(const std::string& filePath, const std::vector<char>& expectedData, const int& hash);
     std::string computeSHA256(const std::string& data);
 #endif
+int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize, int pass = 1);
 bool shredFile(const fs::path& filePath);
+bool hasWritePermission(const fs::path& path);
 void processPath(const fs::path& path);
 void syncFile(const fs::path& filePath);
 void logMessage(logLevel type, const std::string& message);
@@ -169,10 +184,12 @@ int main(int argc, char* argv[]) {
 
 std::vector<std::string> parseArguments(int argc, char* argv[]) { // Function to parse command line arguments
     std::vector<std::string> fileArgs; // Initialize vector to store files to shred
+    char* nMsg = new char[38]; // Initilizes char array to store a commonly used message
+    strcpy(nMsg, "Flag '-n' requires a positive integer");
     
     // Parse command-line arguments
     for (int i = 1; i < argc; ++i) { // Iterates over input length
-        std::string arg = argv[i]; // Initializes argument position to iteration
+        std::string arg = argv[i]; // Initializes position in argument to iteration
 
         if (arg[0] == '-') { // Searches for a word starting with a hyphen
             for (size_t j = 1; j < arg.size(); ++j) { // Gets size of word and iterates the individual letter(s)
@@ -193,16 +210,16 @@ std::vector<std::string> parseArguments(int argc, char* argv[]) { // Function to
                                     overwriteCount = std::stoi(arg.substr(start, end - start)); // Extracts integer
                                     j = end - 1; // Move cursor to end of integer
                                 } catch (...) {
-                                    errorExit(1, "Flag '-n' requires a positive integer");
+                                    errorExit(1, nMsg);
                                 }
                             } else if (i + 1 < argc) { // If there is a space, look in next argument
                                 try {
                                     overwriteCount = std::stoi(argv[++i]); // Increments i and moves to the next argument
                                 } catch (...) {
-                                    errorExit(1, "Flag '-n' requires a positive integer");
+                                    errorExit(1, nMsg);
                                 }
                             } else {
-                                errorExit(1, "Flag '-n' requires a positive integer");
+                                errorExit(1, nMsg);
                             }
                             break;
                         }
@@ -215,11 +232,10 @@ std::vector<std::string> parseArguments(int argc, char* argv[]) { // Function to
                         case 'c': verify = false; break;
                         case 'i': internal = true; break;
                     }
-                } else { // If the character was not validated, deuces (this section is intentionally over-complicated for my learning. Thank you for understanding)
-                    char* str = new char[13]; // Allocates 13 bits to a char
-                    strcpy(str, "Invalid flag"); // Copies the string to the allocated char pointer
+                } else { // If the character was not validated, deuces
+                    delete[] nMsg;
                     std::string flg(1, flag); // Sets 'flg' string to the content of the flag char
-                    errorExit(1, str, flg); // Calls the exit with the variables
+                    errorExit(1, "Invalid flag", flg); // Calls the exit with the variables
                 }
             }
         } else { // Append all non-flag arguments to the file argument vector
@@ -262,7 +278,7 @@ void processPath(const fs::path& path) {
                     if (fs::remove(path)) { // Remove directory after after successful deletion of all files
                         logMessage(INFO, "Directory '" + path.string() + "' successfully deleted.");
                     } else {
-                        logMessage(ERROR, "Failed to delete directory '" + path.string() + "'.");
+                        logMessage(ERROR, "Failed to delete directory '" + path.string() + "'");
                     }
                 } else { // Directory wasn't deleted: keep files or directory is not empty
                     if (keep_files) { logMessage(WARNING, "Directory '" + path.string() + "' was not deleted (keep_files flag)."); }
@@ -362,18 +378,18 @@ void syncFile(const fs::path& filePath) {
         OPEN_EXISTING, // Open the file
         FILE_ATTRIBUTE_NORMAL, // Normal attributes
         NULL); // No template
-    if (hFile == INVALID_HANDLE_VALUE) { // 
+    if (hFile == INVALID_HANDLE_VALUE) { // Checks if sync was successful
         logMessage(WARNING, "File '" + filePath.string() + "' failed to synchronize.");
         return;
     }
-    if (!FlushFileBuffers(hFile)) {
+    if (!FlushFileBuffers(hFile)) { // Flushes file
         logMessage(WARNING, "File '" + filePath.string() + "' failed to flush.");
     }
     CloseHandle(hFile);
 #else
-    FILE* file = fopen(filePath.c_str(), "r");
+    FILE* file = fopen(filePath.c_str(), "r"); // Opens the file
     for (int openCount = 0; openCount < 3; ++openCount) {
-        if (file) {
+        if (file) { // Syncs/flushes the file
             fsync(fileno(file));
             fclose(file);
             break;
@@ -386,64 +402,96 @@ void syncFile(const fs::path& filePath) {
 
 void cleanupMetadata(std::string& filePath) {
 #ifdef _WIN32
-    DeleteFile((filePath + ":$DATA").c_str());
+    if (!DeleteFile((filePath + ":$DATA").c_str());) { // Remove the file's DATA stream
+        DWORD lastError = GetLastError();
+        logMessage(WARNING, "The file's metadata failed to stripped." + std::to_string(lastError));
+    }
 #else
-    if (listxattr(filePath.c_str(), nullptr, 0, 0) > 0) {
-        std::vector<char> attrs(1024);
-        ssize_t len = listxattr(filePath.c_str(), attrs.data(), attrs.size(), 0);
-        for (ssize_t i = 0; i < len; i += strlen(&attrs[i]) + 1) {
-            removexattr(filePath.c_str(), &attrs[i], 0);
+    try {
+        ssize_t len = listxattr(filePath.c_str(), nullptr, 0, 0); // Retrieves length of attributes
+        if (len > 0) { // Iterates through file attributes and removes them
+            std::vector<char> attrs(len); // Dynamically allocates attribution size to size of len
+            len = listxattr(filePath.c_str(), attrs.data(), attrs.size(), 0); // Gets length again and writes data to attrs variable
+            for (ssize_t i = 0; i < len; i += strlen(&attrs[i]) + 1) { // Iterates 'len' times though 'attrs'
+                removexattr(filePath.c_str(), &attrs[i], 0); // Remove attr number 'i'
+            }
         }
+    } catch (...) {
+        logMessage(WARNING, "Failed to get and remove file attributes.");
     }
 #endif
 }
 
 #ifdef OPENSSL_FOUND
-    std::string computeSHA256(const std::string& data) {
-        unsigned char hash[SHA256_DIGEST_LENGTH];
-        SHA256_CTX sha256Context;
-        SHA256_Init(&sha256Context);
-        SHA256_Update(&sha256Context, data.c_str(), data.length());
-        SHA256_Final(hash, &sha256Context);
+    std::string computeSHA256(const std::string& data) { // Gets SHA256 hash
+        EVP_MD_CTX *mdctx = EVP_MD_CTX_new(); // Initializes context
+        const EVP_MD *md = EVP_sha256(); // Sets mode to SHA256
+        unsigned char hash[EVP_MAX_MD_SIZE]; // Buffer for hash
+        unsigned int hashLen; // Length for hash
 
-        std::ostringstream hexStream;
-        for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+        if (mdctx == nullptr) { // If it failed to initialize
+            logMessage(ERROR, "Failed to create OpenSSL EVP context for SHA256.");
+            return "";
+        }
+
+        if (EVP_DigestInit_ex(mdctx, md, nullptr) != 1) { // Initialize the context with the mode
+            EVP_MD_CTX_free(mdctx); // Frees context
+            logMessage(ERROR, "Failed to initialize OpenSSL SHA256 context.");
+            return "";
+        }
+
+        if (EVP_DigestUpdate(mdctx, data.c_str(), data.length()) != 1) { // Updates the hash with data
+            EVP_MD_CTX_free(mdctx);
+            logMessage(ERROR, "Failed to update OpenSSL SHA256 context.");
+            return "";
+        }
+
+        if (EVP_DigestFinal_ex(mdctx, hash, &hashLen) != 1) { // Finalizes hash calculation
+            EVP_MD_CTX_free(mdctx);
+            logMessage(ERROR, "Failed to finalize OpenSSL SHA256 hash.");
+            return "";
+        }
+
+        EVP_MD_CTX_free(mdctx); // Frees the context
+
+        std::ostringstream hexStream; // Opens output stringstream for hex-formatted hash
+        for (unsigned int i = 0; i < hashLen; ++i) {  // Iterates through the hash and formats as hex
             hexStream << std::setw(2) << std::setfill('0') << std::hex << (int)hash[i];
         }
+
         return hexStream.str();
     }
 
-    int verifyWithHash(const std::string& filePath, const std::vector<char>& expectedData) {
-        std::ifstream file(filePath, std::ios::binary);
-        if (!file.is_open()) {
-            logMessage(ERROR, "File failed to open for hashing.");
-            return 1;
+    int verifyWithHash(const std::string& filePath, const std::vector<char>& expectedData, const int& pass) {
+        std::ifstream file(filePath, std::ios::binary); // Opens input (binary) stream for file (rb)
+        if (!file.is_open()) { // If the file doesn't open
+            logMessage(ERROR, "File " + filePath + "failed to open for hashing. Attempting fallback..");
+            return 1; // Triggers fallback initiation for calling function
         }
-        std::string fileContent((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        file.close();
+        std::string fileContent((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>()); // Retrieves files contents
+        file.close(); // Closes file
 
-        std::string fileHash = computeSHA256(fileContent);
-        std::string expectedHash = computeSHA256(std::string(expectedData.begin(), expectedData.end()));
+        std::string fileHash = computeSHA256(fileContent); // Calculates hash from file data
+        std::string expectedHash = computeSHA256(std::string(expectedData.begin(), expectedData.end())); // Calculates hash from saved data
 
-        if (fileHash == expectedHash) {
-            logMessage(INFO, "Successfully verified file hash for '" + filePath + "'");
+        if (fileHash == expectedHash) { // Only if they are identical will we say it succeeded
+            logMessage(INFO, "Successfully verified file hash for '" + filePath + "' on pass " + std::to_string(pass));
         } else {
-            logMessage(WARNING, "Hash mismatch for '" + filePath + "'");
-            return 2;
+            logMessage(WARNING, "Hash mismatch for '" + filePath + "' on pass " + std::to_string(pass));
+            return 2; // Triggers verification failed for calling function
         }
-        return 0;
+        return 0; // Triggers verification success
     }
 #endif
 
 bool shredFile(const fs::path& filePath) {
-    int verificationFailed = 0;
     try {
         verificationFailed = 0;
-        if (dry_run) {
-            if (fs::is_symlink(filePath) && !follow_symlinks) {
+        if (dry_run) { // Triggers if not deleting
+            if (fs::is_symlink(filePath) && !follow_symlinks) { // Iterates through options for a reliable file iteration
                 logMessage(DRY_RUN, "Symlink file '" + filePath.string() + "' would not be shredded.");
             } else {
-            logMessage(DRY_RUN, "Simulating shredding file '" + filePath.string() + "'.");
+            logMessage(DRY_RUN, "Simulating shredding file '" + filePath.string() + "'");
             }
             
             return true;
@@ -458,13 +506,17 @@ bool shredFile(const fs::path& filePath) {
             }
         }
 
-        if (fs::file_size(filePath) == 0) {
+        // Gets file permissions, aborts if not found
+        bool writePermission = hasWritePermission(filePath);
+        if (!writePermission && !failedToRetrievePermissions) { logMessage(ERROR, "No write permissions for file '" + filePath.string() + "'"); return false; }
+
+        if (fs::file_size(filePath) == 0) { // Skip the shredding of empty files, delete them immediately.
             if (!keep_files) {
                 logMessage(INFO, "File '" + filePath.string() + "' is empty and will be deleted without overwriting.");
                 if (std::remove(filePath.c_str()) == 0) {
                     logMessage(INFO, "Empty file '" + filePath.string() + "' successfully deleted.");
                 } else {
-                    logMessage(ERROR, "Failed to delete empty file '" + filePath.string() + "'.");
+                    logMessage(ERROR, "Failed to delete empty file '" + filePath.string() + "'");
                     return false;
                 }
             } else {
@@ -473,7 +525,7 @@ bool shredFile(const fs::path& filePath) {
             return true;
         }
 
-        auto fileSize = fs::file_size(filePath);
+        auto fileSize = fs::file_size(filePath); // get size of file (to know how much to overwrite)
         std::fstream file; // fstream instead ofstream to prevent appending
         int attempts = 0;
 
@@ -495,10 +547,10 @@ bool shredFile(const fs::path& filePath) {
 
         for (int i = 0; i < overwriteCount; ++i) { // Call shredder for amount specified in overwriteCount
             file.seekp(0, std::ios::beg); // Move to beginning of buffer (file)
-            if (overwriteWithRandomData(filePath.string(), file, fileSize) == 1) {
+            if (overwriteWithRandomData(filePath.string(), file, fileSize, i + 1) == 1) {
                 verificationFailed = 1; // Overwrite function returns 1 if verification fails
             }
-            logMessage(INFO, "Completed overwrite pass " + std::to_string(i + 1) + " for file '" + filePath.string() + "'."); // Prints pass count
+            logMessage(INFO, "Completed overwrite pass " + std::to_string(i + 1) + " for file '" + filePath.string() + "'"); // Prints pass count
             std::cout << "Progress: " << std::fixed << std::setprecision(1)  // Percent-style progress meter
                       << ((i + 1) / static_cast<float>(overwriteCount)) * 100 << "%\r" << std::flush;
         }
@@ -506,6 +558,8 @@ bool shredFile(const fs::path& filePath) {
         if (internal && verificationFailed || verbose && verificationFailed) { logMessage(WARNING, "Overwrite verification failed for '" + filePath.string() + "' Skipping deletion."); } // Prints verification failure, only if verbose because overwrite function says it too.
         file.close(); // Close file, if completed
         syncFile(filePath); // Force filesystem synchronization
+
+        bufferSizePrinted = false; // Reset for next file
         
         if (!keep_files && !verificationFailed) { // Delete file after shredding (if not keeping)
             try {
@@ -524,11 +578,11 @@ bool shredFile(const fs::path& filePath) {
                 std::cerr << "An error has occured while obfuscating metadata on the file '" << filePath.string() << "'" << std::endl;
             }
 
-            if (std::remove(filePath.c_str()) == 0) {
+            if (std::remove(filePath.c_str()) == 0) { // If successfully deleted
                 if (verify) { logMessage(INFO, "File '" + filePath.string() + "' shredded, verified, and deleted."); }
                     else if (!verify) { logMessage(INFO, "File '" + filePath.string() +"' shredded and deleted without verification."); }
-            } else {
-                logMessage(ERROR, "Failed to delete file '" + filePath.string() + "'.");
+            } else { // Or not
+                logMessage(ERROR, "Failed to delete file '" + filePath.string() + "'");
                 return false;
             }
         } else {
@@ -545,7 +599,7 @@ bool shredFile(const fs::path& filePath) {
     }
 }
 
-int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize) {
+int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize, int pass) {
     const std::uintmax_t bufferSize = getOptimalBlockSize();  // Get the block size
     std::vector<char> buffer(bufferSize); // Set buffersize to retrieved value (block size)
 
@@ -565,29 +619,29 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
     
 
     // Secure random generator
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dist(0, 255);
+    std::random_device rd; // Opens a random device
+    std::mt19937 gen(rd()); // Set the random device to generate
+    std::uniform_int_distribution<> dist(0, 255); // Sets even distribution for data generation
     std::vector<char> lastRandomData(fileSize); // For verification
 
     for (std::uintmax_t offset = 0; offset < fileSize; offset += bufferSize) {
-        std::uintmax_t writeSize = std::min(bufferSize, fileSize - offset);
+        std::uintmax_t writeSize = std::min(bufferSize, fileSize - offset); // Finds writesize
         
         // Generate random data for non-secure or final pass
         if (!secure_mode) {
-            std::generate(buffer.begin(), buffer.end(), [&]() { return static_cast<char>(dist(gen)); });
-            if (verify) { std::copy(buffer.begin(), buffer.begin() + writeSize, lastRandomData.begin() + offset); }
-            file.seekp(offset);
-            file.write(buffer.data(), writeSize);
+            std::generate(buffer.begin(), buffer.end(), [&]() { return static_cast<char>(dist(gen)); }); // Generates it
+            if (verify) { std::copy(buffer.begin(), buffer.begin() + writeSize, lastRandomData.begin() + offset); } // Copies the verification
+            file.seekp(offset); // Moves to offset
+            file.write(buffer.data(), writeSize);  // Writes buffer with retrieved size
         } else {
-            // Secure shredding mode with multiple patterns
+            // Secure shredding mode with multiple patterns (defined and random, plus DoD standards)
             for (int pass = 0; pass < securePasses; ++pass) {
                 gen.seed(rd() + pass + offset); // Re-seed with the pass and offset
                 
                 // Apply a pre-set pattern
-                std::memcpy(buffer.data(), patterns[pass % patterns.size()].data(), bufferSize);
-                file.seekp(offset);
-                file.write(buffer.data(), writeSize);
+                std::memcpy(buffer.data(), patterns[pass].data(), bufferSize); // Copy pattern (number 'pass') to buffer9
+                file.seekp(offset); // Move to offset
+                file.write(buffer.data(), writeSize); // Write buffer to file
 
                 // Introduce random pattern for every other pass for additional security
                 if (pass % 2 == 1) {
@@ -599,9 +653,9 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
 
             // DoD-required passes
             // Pass 1: Overwrite with 0x00
-            std::fill(buffer.begin(), buffer.end(), '\x00');
-            file.seekp(offset);
-            file.write(buffer.data(), writeSize);
+            std::fill(buffer.begin(), buffer.end(), '\x00'); // Fills buffer
+            file.seekp(offset); // Moves to offset
+            file.write(buffer.data(), writeSize); // Writes buffer to file
 
             // Pass 2: Overwrite with 0xFF
             std::fill(buffer.begin(), buffer.end(), '\xFF');
@@ -609,14 +663,14 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
             file.write(buffer.data(), writeSize);
 
             // Pass 3: Overwrite with random data
-            std::generate(buffer.begin(), buffer.end(), [&]() { return static_cast<char>(dist(gen)); });
+            std::generate(buffer.begin(), buffer.end(), [&]() { return static_cast<char>(dist(gen)); }); // Fills buffer with random data
             if (verify) { std::copy(buffer.begin(), buffer.begin() + writeSize, lastRandomData.begin() + offset); }
             file.seekp(offset);
             file.write(buffer.data(), writeSize);
             if (internal) { std::cout << "Successfully wrote all DoD passes to block" << std::endl; }
         }
     }
-    if (internal) { std::cout << "Blocksize: " << bufferSize << std::endl; }
+    if (internal && !bufferSizePrinted) { std::cout << "Blocksize: " << bufferSize << std::endl; bufferSizePrinted = true; }
     if (verify) {
         int ret = 1; // Return value (default as "fail")
         file.flush(); // Ensure all writes are complete
@@ -625,29 +679,93 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
         std::vector<char> verifyBuffer(bufferSize);
         verificationFailed = false; // Initializes boolean that determines if file verification failed
 #ifdef OPENSSL_FOUND
-        ret = verifyWithHash(filePath, lastRandomData); // Verify hash
-        if (ret == 2) { verificationFailed = true; }
-        if (ret == 0) { return 0; }
+        ret = verifyWithHash(filePath, lastRandomData, pass); // Verify hash
+        if (ret == 2) { verificationFailed = true; } // If failed
+        if (ret == 0) { return 0; } // If successful
 #endif
-    if (ret == 1) {
+    if (ret == 1) { // If it failed or OpenSSL is not defined, use fallback verification
         for (std::uintmax_t offset = 0; offset < fileSize; offset += bufferSize) {
-            std::uintmax_t readSize = std::min(bufferSize, fileSize - offset);
-            file.read(verifyBuffer.data(), readSize);
+            std::uintmax_t readSize = std::min(bufferSize, fileSize - offset); // Gets size to read
+            file.read(verifyBuffer.data(), readSize); // Reads the control
 
             // Check if the data is consistent with erasure (e.g., all zeroes after overwrite)
             if (!std::equal(verifyBuffer.begin(), verifyBuffer.begin() + readSize, lastRandomData.begin() + offset)) {
                 if (verbose) { std::cerr << "Verification failed at offset: " << offset << '\n'; }
-                verificationFailed = true;
+                verificationFailed = true; // If it is not equal, fail
                 break;
             }
         }
     }
-        if (verificationFailed) { return 1; }
+        if (verificationFailed) { return 1; } // This will export to the other function for altered behavior
     }
-    return 0;
+    return 0; // Exports success
 }
 
-void help(char* argv[]) {
+bool hasWritePermission(const fs::path& path) {
+#ifdef _WIN32
+    // Windows-specific write permission check using CreateFile
+    DWORD dwDesiredAccess = GENERIC_WRITE; // Set write permission as desired
+    DWORD dwError = 0; // Initialize error variable
+    HANDLE hFile = CreateFile(path.c_str(), dwDesiredAccess, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL); // Gets file info
+
+    if (hFile == INVALID_HANDLE_VALUE) { // Trigger for incorrectly opened handles
+        dwError = GetLastError(); // Gets error value
+        if (dwError == ERROR_ACCESS_DENIED) { // If it is because of wrtie permissions, it will fail
+            logMessage("WARNING", "Access denied for file '" + path.string() + "'");
+            failedToRetrievePermissions = true;
+            return false;
+        }
+    } else {
+        CloseHandle(hFile); // Closes handle and returns has write permission
+        return true;
+    }
+    return false;
+#else
+    // POSIX (Linux/macOS) write permission check
+    std::error_code ec; // Opens an error code
+    fs::file_status status = fs::status(path, ec); // Copies the file information (status) into the file_status struct status (uses error code)
+    if (ec) { // If there is an error retrieving the file status
+        logMessage(ERROR, "Failed to retrieve permissions for '" + path.string() + "': " + ec.message());
+        failedToRetrievePermissions = true;
+        return false;
+    }
+
+    auto perms = status.permissions(); // Extracts file permissions from the file_status structure status
+
+    struct stat fileStat; // Creates a structure following the stat structure
+    if (stat(path.c_str(), &fileStat) == -1) { // Gets file status (information) and copies it into the fileStat structure
+        logMessage(ERROR, "Failed to get file status for '" + path.string() + "'");
+        failedToRetrievePermissions = true;
+        return false;
+    }
+
+    uid_t fileOwner = fileStat.st_uid; // Gets file owner
+    gid_t fileGroup = fileStat.st_gid; // Gets file group
+
+    uid_t currentUser = getuid(); // Gets current user id
+    gid_t currentGroup = getgid(); // Gets current group id
+
+    bool isOwner = (currentUser == fileOwner); // Checks if current user is file owner
+    bool isInGroup = (currentGroup == fileGroup); // Checks if current user is in file group
+
+    bool writePermission = false; // By default, no permissions
+
+    // Iterates through perms looking for the respective write permissions
+    if (isOwner) { // Checks for owner write, if owner
+        writePermission = (perms & fs::perms::owner_write) != fs::perms::none;
+    } else if (isInGroup) { // Checks for group write, if in group
+        writePermission = (perms & fs::perms::group_write) != fs::perms::none;
+    } else { // Checks for others write, if neither owner or in group
+        writePermission = (perms & fs::perms::others_write) != fs::perms::none;
+    }
+
+    if (geteuid() == 0) { writePermission = true; } // If root, bypass this check
+
+    return writePermission;
+#endif
+}
+
+void help(char* argv[]) { // The print help functon (At bottom due to size and lack of functionality)
     std::cerr << "NAME\n";
     std::cerr << "    " << argv[0] << " - Securely overwrite and remove files\n\n";
 
