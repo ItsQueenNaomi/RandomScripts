@@ -16,10 +16,10 @@
   along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 /*
-  File and Directory Shredder
-  Version: 4c
-  Author: Aristotle Daskaleas (2024)
-  Changelog (since v1):
+File and Directory Shredder
+Version: 5a
+Author: Aristotle Daskaleas (2024)
+Changelog (since v1):
     -> Removed multithreading due to file handling conflicts
     -> Added better encryption for secure mode
     -> Commented out redundant functions and debugging code
@@ -40,8 +40,10 @@
     -> Improved metadata handler
     -> Refractored code. main() is now basically the first function, and it might be easier to read now, I don't know
     -> Added a syncFile() function to maintain cross-compatibility.
-    -> Added hashing for verification for systems with openssl
-  To-do:
+    -> Added hashing for verification for systems with OpenSSL
+    -> Improved error handling and logging
+    -> Implemented and improved errorExit() function
+To-do:
     -> Nothing.
 */
 #include <iostream> // For console logging
@@ -109,7 +111,7 @@ bool shredFile(const fs::path& filePath);
 void processPath(const fs::path& path);
 void syncFile(const fs::path& filePath);
 void logMessage(logLevel type, const std::string& message);
-void errorExit(int value = 1, std::string message = "");
+void errorExit(int value = 1, std::string message = "", std::string flag = "");
 void cleanupMetadata(std::string& filePath);
 void help(char* argv[]);
 std::vector<std::string> parseArguments(int argc, char* argv[]);
@@ -191,19 +193,16 @@ std::vector<std::string> parseArguments(int argc, char* argv[]) { // Function to
                                     overwriteCount = std::stoi(arg.substr(start, end - start)); // Extracts integer
                                     j = end - 1; // Move cursor to end of integer
                                 } catch (...) {
-                                    std::cerr << "ERROR: '-n' flag requires a positive integer\n";
-                                    errorExit(1);
+                                    errorExit(1, "Flag '-n' requires a positive integer");
                                 }
                             } else if (i + 1 < argc) { // If there is a space, look in next argument
                                 try {
                                     overwriteCount = std::stoi(argv[++i]); // Increments i and moves to the next argument
                                 } catch (...) {
-                                    std::cerr << "ERROR: '-n' flag requires a positive integer\n";
-                                    errorExit(1);
+                                    errorExit(1, "Flag '-n' requires a positive integer");
                                 }
                             } else {
-                                std::cerr << "ERROR: '-n' flag requires a positive integer\n";
-                                errorExit(1);
+                                errorExit(1, "Flag '-n' requires a positive integer");
                             }
                             break;
                         }
@@ -216,9 +215,11 @@ std::vector<std::string> parseArguments(int argc, char* argv[]) { // Function to
                         case 'c': verify = false; break;
                         case 'i': internal = true; break;
                     }
-                } else { // If the character was not validated, deuces
-                    std::cerr << "ERROR: Invalid flag (-" << flag << ").\n"; // If a letter was not in the valid flags variable
-                    errorExit(1);
+                } else { // If the character was not validated, deuces (this section is intentionally over-complicated for my learning. Thank you for understanding)
+                    char* str = new char[13]; // Allocates 13 bits to a char
+                    strcpy(str, "Invalid flag"); // Copies the string to the allocated char pointer
+                    std::string flg(1, flag); // Sets 'flg' string to the content of the flag char
+                    errorExit(1, str, flg); // Calls the exit with the variables
                 }
             }
         } else { // Append all non-flag arguments to the file argument vector
@@ -227,9 +228,8 @@ std::vector<std::string> parseArguments(int argc, char* argv[]) { // Function to
     }
 
     // Check if any files were provided
-    if (fileArgs.empty()) { // Suggest help if not
-        std::cerr << "Incorrect usage. Use '-h' for help" << std::endl;
-        errorExit(1);
+    if (fileArgs.empty()) { // Suggest help if no
+        errorExit(1, "Incorrect usage. Use '-h' for help");
     }
     return fileArgs;
 }
@@ -300,9 +300,11 @@ void logMessage(logLevel type, const std::string& message) { // Function to log 
     }
 }
 
-void errorExit(int value, std::string message) { // Function to provide ability to exit program outside of main function
-    if (!message.empty()) {
+void errorExit(int value, std::string message, std::string flag) { // Function to provide ability to exit program outside of main function
+    if (!message.empty() && flag.empty()) {
         logMessage(ERROR, message);
+    } else if (!message.empty() && !flag.empty()) {
+        logMessage(ERROR, message + " (-" + flag + ")");
     }
     exit(value);
 }
