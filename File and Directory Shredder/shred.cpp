@@ -17,7 +17,7 @@
 */
 /*
 File and Directory Shredder
-Version: 6b
+Version: 7a
 Author: Aristotle Daskaleas (2024)
 Changelog (since v1):
     -> Removed multithreading due to file handling conflicts
@@ -48,6 +48,7 @@ Changelog (since v1):
     -> Added compilation flag section for easy reference, to streamline compliation
     -> Added write permission checking function
     -> Improved OpenSSL functions (moved away from the depreciated functions)
+    -> Added force delete flag and changed flag denotation for "follow_symlinks"
 To-do:
     -> Nothing.
 
@@ -98,13 +99,15 @@ bool follow_symlinks = false; // boolean to indicate whether symbolic links will
 bool secure_mode = false; // boolean to indicate shredding mode
 bool dry_run = false; // boolean to indicate if any files will actually be shredded
 bool verify = true; // boolean to indicate verification after shredding
+bool force_delete = false; // boolean to indicate force delete attempt
 bool internal = false; // boolean to indicate whether scripting information is revealed
 
 bool failedToRetrievePermissions = false; // Global boolean to indicate if permissions were successfully retrieved
 bool bufferSizePrinted = false; // Global boolean to indicate if the buffer size was already printed
 bool verificationFailed = false; // Global boolean to determine if verification failed (used in multiple functions)
+bool writePermission = false; // Global boolean to determine if the current file being process has write permissions
 
-const std::string validFlags = "nrkvfsdchi"; // Indicated valid program flags
+const std::string validFlags = "nrkvfsdchei"; // Indicated valid program flags
 
 std::mutex fileMutex; // Defines file name generation variable
 
@@ -123,6 +126,7 @@ enum logLevel { // Define valid log levels
 int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize, int pass = 1);
 bool shredFile(const fs::path& filePath);
 bool hasWritePermission(const fs::path& path);
+bool forceDelete(const std::string &filePath);
 void processPath(const fs::path& path);
 void syncFile(const fs::path& filePath);
 void logMessage(logLevel type, const std::string& message);
@@ -226,10 +230,11 @@ std::vector<std::string> parseArguments(int argc, char* argv[]) { // Function to
                         case 'r': recursive = true; break;
                         case 'k': keep_files = true; break;
                         case 'v': verbose = true; break;
-                        case 'f': follow_symlinks = true; break;
+                        case 'e': follow_symlinks = true; break;
                         case 's': secure_mode = true; break;
                         case 'd': dry_run = true; break;
                         case 'c': verify = false; break;
+                        case 'f': force_delete = true; break;
                         case 'i': internal = true; break;
                     }
                 } else { // If the character was not validated, deuces
@@ -506,8 +511,17 @@ bool shredFile(const fs::path& filePath) {
             }
         }
 
+        if (fs::is_empty(filePath)) {
+            logMessage(ERROR, "File '" + filePath.string() + "' is empty and will not be shredded.");
+            return false;
+        }
+
         // Gets file permissions, aborts if not found
-        bool writePermission = hasWritePermission(filePath);
+        bool writePermission = hasWritePermission(filePath); // Retrieve write permission status
+        if (!writePermission && force_delete) { // Only if force_delete flag is set
+            logMessage(INFO, "There are no write permissions for '" + filePath.string() + "'");
+            forceDelete(filePath); // If file permission modification succeeds, set write permission
+        }
         if (!writePermission && !failedToRetrievePermissions) { logMessage(ERROR, "No write permissions for file '" + filePath.string() + "'"); return false; }
 
         if (fs::file_size(filePath) == 0) { // Skip the shredding of empty files, delete them immediately.
@@ -748,7 +762,7 @@ bool hasWritePermission(const fs::path& path) {
     bool isOwner = (currentUser == fileOwner); // Checks if current user is file owner
     bool isInGroup = (currentGroup == fileGroup); // Checks if current user is in file group
 
-    bool writePermission = false; // By default, no permissions
+    writePermission = false; // By default, no permissions
 
     // Iterates through perms looking for the respective write permissions
     if (isOwner) { // Checks for owner write, if owner
@@ -763,6 +777,49 @@ bool hasWritePermission(const fs::path& path) {
 
     return writePermission;
 #endif
+}
+
+bool forceDelete(const std::string &filePath) {
+    try {
+        logMessage(INFO, "Attempting to add write permissions to '" + filePath + "'");
+
+        // Step 1: Modify file permissions to ensure write access
+        logMessage(INFO, "Changing file permissions on file '" + filePath + "'");
+#ifdef _WIN32
+        // On Windows, remove read-only attribute
+        DWORD attributes = GetFileAttributes(filePath.c_str());
+        if (attributes & FILE_ATTRIBUTE_READONLY) {
+            SetFileAttributes(filePath.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY);
+            logMessage(INFO, "Removed read-only attribute on file '" + filePath + "'");
+            writePermission = true;
+            failedToRetrievePermissions = true;
+            return true;
+        }
+#else
+        // On POSIX systems, ensure full permissions
+        if (chmod(filePath.c_str(), S_IRUSR | S_IWUSR | S_IXUSR) == 0) {
+            logMessage(INFO, "Permissions updated on file '" + filePath + "'");
+        }
+#endif
+
+        // Step 2: Attempt to remove extended attributes (Linux/macOS)
+#ifndef _WIN32
+        logMessage(INFO, "Clearing extended attributes on file '" + filePath + "'");
+        // Extended attributes are system-dependent, handled here if supported
+        if (system(("xattr -c " + filePath + " 2>/dev/null").c_str()) == 0) {
+            logMessage(INFO, "Extended attributes cleared on file '" + filePath + "'");
+            writePermission = true;
+            failedToRetrievePermissions = true;
+            return true;
+        }
+#endif
+    } catch (const fs::filesystem_error) {
+        logMessage(ERROR, "Filesystem error for file '" + filePath + "'");
+    } catch (const std::exception) {
+        logMessage(ERROR, "Error on file '" + filePath + "'");
+    }
+
+    return false;
 }
 
 void help(char* argv[]) { // The print help functon (At bottom due to size and lack of functionality)
@@ -785,10 +842,11 @@ void help(char* argv[]) { // The print help functon (At bottom due to size and l
     std::cerr << "    -r <recursive>        Enable recursive mode to shred directories and their contents\n";
     std::cerr << "    -k <keep files>       Keep files after overwriting (no removal)\n";
     std::cerr << "    -v <verbose>          Enable verbose output for detailed logging\n";
-    std::cerr << "    -f <follow symlinks>  Follow symlinks during shredding\n";
+    std::cerr << "    -e <follow symlinks>  Follow symlinks during shredding\n";
     std::cerr << "    -s <secure mode>      Enable secure shredding with randomization (slower)\n";
     std::cerr << "    -d <dry run>          Show what would be shredded without actual processing\n";
-    std::cerr << "    -c <no verification>  Skip post-shredding verification (faster)\n\n";
+    std::cerr << "    -c <no verification>  Skip post-shredding verification (faster)\n";
+    std::cerr << "    -f <force>            Force delete the files if there is no write permission\n\n";
 
     std::cerr << "DESCRIPTION OF OPTIONS\n";
     std::cerr << "    -n <overwrites>\n";
@@ -807,7 +865,7 @@ void help(char* argv[]) { // The print help functon (At bottom due to size and l
     std::cerr << "        Enables verbose output, printing detailed information about each step of the shredding process.\n";
     std::cerr << "        Useful for debugging or confirming that the program is functioning as expected.\n\n";
 
-    std::cerr << "    -f <follow symlinks>\n";
+    std::cerr << "    -e <follow symlinks>\n";
     std::cerr << "        Follow symbolic links and include them in the shredding process. Without this flag, symlinks are ignored.\n\n";
 
     std::cerr << "    -s <secure mode>\n";
@@ -822,11 +880,29 @@ void help(char* argv[]) { // The print help functon (At bottom due to size and l
     std::cerr << "        Disables the post-shredding file verification. Normally, the tool verifies that files have been overwritten\n";
     std::cerr << "        after shredding, but this step can be skipped with this option for faster operation.\n\n";
 
+    std::cerr << "    -f <force>\n";
+    std::cerr << "        Will attempt to change file permissions and remove extended attributes to attempt to delete files which\n";
+    std::cerr << "        do not currently have effective write permission, use this for stubborn files.\n\n";
+
     std::cerr << "EXAMPLES\n";
     std::cerr << "    " << argv[0] << " -n 5 -r -v -s file1.txt file2.txt directory1\n";
     std::cerr << "        Overwrites 'file1.txt' and 'file2.txt' with 5 passes, recursively handles 'directory1', and uses secure\n";
     std::cerr << "        mode with verbose output.\n\n";
 
     std::cerr << "    " << argv[0] << " -d file1.txt file2.txt\n";
-    std::cerr << "        Performs a dry run to show what would be shredded without actual deletion.\n";
+    std::cerr << "        Performs a dry run to show what would be shredded without actual deletion.\n\n";
+
+    std::cerr << "COPYRIGHT\n";
+    std::cerr << "    File and directory shredder. It shreds files and directories specified on the command line.\n";
+    std::cerr << "    Copyright (C) 2024  Aristotle Daskaleas\n\n";
+    std::cerr << "    This program is free software: you can redistribute it and/or modify\n";
+    std::cerr << "    it under the terms of the GNU General Public License as published by\n";
+    std::cerr << "    the Free Software Foundation, either version 3 of the License, or\n";
+    std::cerr << "    (at your option) any later version.\n\n";
+    std::cerr << "    This program is distributed in the hope that it will be useful,\n";
+    std::cerr << "    but WITHOUT ANY WARRANTY; without even the implied warranty of\n";
+    std::cerr << "    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n";
+    std::cerr << "    GNU General Public License for more details.\n\n";
+    std::cerr << "    You should have received a copy of the GNU General Public License\n";
+    std::cerr << "    along with this program.  If not, see <https://www.gnu.org/licenses/>.\n";
 }
