@@ -17,7 +17,7 @@
 */
 /*
 File and Directory Shredder
-Version: 7a
+Version: 8
 Author: Aristotle Daskaleas (2024)
 Changelog (since v1):
     -> Removed multithreading due to file handling conflicts
@@ -49,41 +49,52 @@ Changelog (since v1):
     -> Added write permission checking function
     -> Improved OpenSSL functions (moved away from the depreciated functions)
     -> Added force delete flag and changed flag denotation for "follow_symlinks"
+    -> Added permission checking and changing
+    -> Improved permission checking and changing with extended attributes
+    -> Fixed a bug pertaining to incorrectly reporting that the file failed to delete
+    -> Simplified some variables
 To-do:
     -> Nothing.
 
 Current full compilation flag: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto
 */
-#include <iostream> // For console logging
-#include <fstream> // For file operations (writing)
-#include <iomanip> // For formatting log files
-#include <filesystem> // For file / directory operations (stats)
-#include <random> // For overwriting
-#include <chrono> // For clock
-#include <string> // String manipulation
-#include <mutex> // For secure file name generation
-#include <vector> // Storing buffers
-#include <cstring> // for std::memcpy
-#include <thread> // for sleeping (std::this_thread::sleep_for)
-#include <algorithm> // for std::transform
-#include <unistd.h>
+#include <iostream>     // For console logging
+#include <fstream>      // For file operations (writing)
+#include <iomanip>      // For formatting log files
+#include <filesystem>   // For file/directory operations (stats)
+#include <random>       // For generating random data
+#include <chrono>       // For time measurements
+#include <string>       // For string manipulation
+#include <mutex>        // For secure file name generation
+#include <vector>       // For buffer storage
+#include <cstring>      // For std::memcpy
+#include <thread>       // For sleeping (std::this_thread::sleep_for)
+#include <algorithm>    // For std::transform
+#include <stdexcept>    // For exceptions
+#include <cstdlib>      // For environment variables
+
 #ifdef __linux__
-#include <sys/statvfs.h> // Linux library that allows for block size retrieval
-#include <sys/xattr.h> // For OS-specific file operations
-#include <unistd.h> // For filesystem syncing
-#include <sys/stat.h>
-#elif _WIN32
-#include <windows.h> // Windows library that allows for block size retrieval
-#include <winbase.h> // For file deletion
-#include <aclAPI.h> // For file permissions
-#include <sddl.h>
-#elif __APPLE__
-#include <sys/sysctl.h> // Defines required MacOS libraries that allow for block size retrieval
-#include <sys/mount.h>
-#include <sys/xattr.h> // Same as the one above
-#include <unistd.h> // For filesystem syncing
-#include <sys/stat.h>
+#include <sys/statvfs.h>  // For block size retrieval
+#include <unistd.h>       // POSIX operations
+#include <sys/stat.h>     // File information
+#include <sys/xattr.h>    // Linux extended attributes
 #endif
+
+#ifdef _WIN32
+#include <windows.h>      // Windows library that allows for block size retrieval
+#include <winbase.h>      // For file deletion
+#include <aclAPI.h>       // For file permissions
+#include <sddl.h>         // For security descriptor strings
+#endif
+
+#ifdef __APPLE__
+#include <sys/sysctl.h>   // System info
+#include <sys/mount.h>    // File system info
+#include <unistd.h>       // POSIX operations
+#include <sys/stat.h>     // File information
+#include <sys/xattr.h>    // macOS extended attributes
+#endif
+
 #ifdef OPENSSL_FOUND
 #include <openssl/evp.h> // For hashing
 #endif
@@ -115,7 +126,8 @@ enum logLevel { // Define valid log levels
     INFO, // Level to inform with verbosity (i.e., every action)
     WARNING, // Level to inform a non-critical error
     ERROR, // Level to indicate core operational errors
-    DRY_RUN // Only used with '-d' (dry_run) flag
+    DRY_RUN, // Only used with '-d' (dry_run) flag
+    INTERNAL // Only used with '-i' (internal) flag
 };
 
 // Prototype declarations for refactoring
@@ -126,7 +138,7 @@ enum logLevel { // Define valid log levels
 int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize, int pass = 1);
 bool shredFile(const fs::path& filePath);
 bool hasWritePermission(const fs::path& path);
-bool forceDelete(const std::string &filePath);
+bool changePermissions(const std::string &filePath);
 void processPath(const fs::path& path);
 void syncFile(const fs::path& filePath);
 void logMessage(logLevel type, const std::string& message);
@@ -149,8 +161,17 @@ int main(int argc, char* argv[]) {
     std::tm local_tm = *std::localtime(&start_time_t); // Converts it to local time
 
     if (internal) { // Funny extra feature for people in the know about this flag (outputs parameters, files, and a confirmation)
+        // Sets flags to strings for readability
+        std::string recursiveStr = (recursive ? "true" : "false");
+        std::string keep_filesStr = (keep_files ? "true" : "false");
+        std::string follow_symlinksStr = (follow_symlinks ? "true" : "false");
+        std::string secure_modeStr = (secure_mode ? "true" : "false");
+        std::string dry_runStr = (dry_run ? "true" : "false");
+        std::string verifyStr = (verify ? "true" : "false");
+        std::string force_deleteStr (force_delete ? "true" : "false");
+
         // Prints set options
-        std::cout << "Parameters:: Overwrites: " << overwriteCount << ", Recursive: " << recursive << ", Keep_files: " << keep_files << ", Follow_symlinks: " << follow_symlinks << ", Secure_mode " << secure_mode << ", Dry_run: " << dry_run << ", Verify: " << verify << std::endl;
+        std::cout << "Parameters ~ Overwrites: " << overwriteCount << ", Recursive: " << recursiveStr << ", Keep_files: " << keep_filesStr << ", Follow_symlinks: " << follow_symlinksStr << ", Secure_mode: " << secure_modeStr << ", Dry_run: " << dry_runStr << ", Verify: " << verifyStr << ", Force: " << force_deleteStr << std::endl;
         std::cout << "Files: " << std::endl;
         for (const auto& filePath : fileArgs) { std::cout << filePath << std::endl; } std::cout << std::endl; // Prints file names
         
@@ -313,6 +334,7 @@ void logMessage(logLevel type, const std::string& message) { // Function to log 
     if (type == ERROR) { level = "ERROR"; }
     if (type == WARNING) { level = "WARNING"; }
     if (type == DRY_RUN) { level = "DRY_RUN"; }
+    if (type == INTERNAL) { level = "INTERNAL"; }
     if (verbose || internal || type != INFO ) { // Only print WARNING, ERRORS, or DRY_RUN levels (unless verbose)
         auto now = std::chrono::system_clock::now(); // gets current time
         auto time = std::chrono::system_clock::to_time_t(now); // changes time to correct format
@@ -520,7 +542,7 @@ bool shredFile(const fs::path& filePath) {
         bool writePermission = hasWritePermission(filePath); // Retrieve write permission status
         if (!writePermission && force_delete) { // Only if force_delete flag is set
             logMessage(INFO, "There are no write permissions for '" + filePath.string() + "'");
-            forceDelete(filePath); // If file permission modification succeeds, set write permission
+            changePermissions(filePath); // If file permission modification succeeds, set write permission
         }
         if (!writePermission && !failedToRetrievePermissions) { logMessage(ERROR, "No write permissions for file '" + filePath.string() + "'"); return false; }
 
@@ -576,13 +598,14 @@ bool shredFile(const fs::path& filePath) {
         bufferSizePrinted = false; // Reset for next file
         
         if (!keep_files && !verificationFailed) { // Delete file after shredding (if not keeping)
+            std::string obfuscatedPath;
             try {
                 std::unique_lock<std::mutex> lock(fileMutex); // Acquire file lock
 
                 fs::permissions(filePath, fs::perms::none); // Remove file permissions
 
                 std::string randomFileName = generateRandomFileName(); // Get a random name
-                std::string obfuscatedPath = fs::temp_directory_path() / randomFileName; // Make a temp path and add the random name
+                obfuscatedPath = fs::temp_directory_path() / randomFileName; // Make a temp path and add the random name
                 fs::rename(filePath, obfuscatedPath); // Move the file to the new temp directory with the random name
 
                 std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Sleep to wait for new metadata to propagate
@@ -592,7 +615,7 @@ bool shredFile(const fs::path& filePath) {
                 std::cerr << "An error has occured while obfuscating metadata on the file '" << filePath.string() << "'" << std::endl;
             }
 
-            if (std::remove(filePath.c_str()) == 0) { // If successfully deleted
+            if (std::remove(obfuscatedPath.c_str()) == 0 || std::remove(filePath.c_str()) == 0) { // If successfully deleted
                 if (verify) { logMessage(INFO, "File '" + filePath.string() + "' shredded, verified, and deleted."); }
                     else if (!verify) { logMessage(INFO, "File '" + filePath.string() +"' shredded and deleted without verification."); }
             } else { // Or not
@@ -681,10 +704,10 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
             if (verify) { std::copy(buffer.begin(), buffer.begin() + writeSize, lastRandomData.begin() + offset); }
             file.seekp(offset);
             file.write(buffer.data(), writeSize);
-            if (internal) { std::cout << "Successfully wrote all DoD passes to block" << std::endl; }
+            if (internal) { logMessage(INTERNAL, "Successfully wrote all DoD passes to block"); }
         }
     }
-    if (internal && !bufferSizePrinted) { std::cout << "Blocksize: " << bufferSize << std::endl; bufferSizePrinted = true; }
+    if (internal && !bufferSizePrinted) { logMessage(INTERNAL, "Blocksize: " + std::to_string(bufferSize)); bufferSizePrinted = true; }
     if (verify) {
         int ret = 1; // Return value (default as "fail")
         file.flush(); // Ensure all writes are complete
@@ -779,40 +802,79 @@ bool hasWritePermission(const fs::path& path) {
 #endif
 }
 
-bool forceDelete(const std::string &filePath) {
+bool changePermissions(const std::string &filePath) {
     try {
+        bool isExecutable = false; // Boolean to store if the file is executable
         logMessage(INFO, "Attempting to add write permissions to '" + filePath + "'");
-
-        // Step 1: Modify file permissions to ensure write access
-        logMessage(INFO, "Changing file permissions on file '" + filePath + "'");
 #ifdef _WIN32
         // On Windows, remove read-only attribute
         DWORD attributes = GetFileAttributes(filePath.c_str());
-        if (attributes & FILE_ATTRIBUTE_READONLY) {
-            SetFileAttributes(filePath.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY);
-            logMessage(INFO, "Removed read-only attribute on file '" + filePath + "'");
-            writePermission = true;
-            failedToRetrievePermissions = true;
+        if (attributes == INVALID_FILE_ATTRIBUTES) { // If the attributes are invalid
+            logMessage(ERROR, "Failed to retrieve file attributes for '" + filePath + "'");
+            return false;
+        }
+        if (attributes & FILE_ATTRIBUTE_READONLY) { // If one of the attributes are read-only
+            if (SetFileAttributes(filePath.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY)) { // If it unsets read-only
+                logMessage(INFO, "Removed read-only attribute on file '" + filePath + "'");
+                failedToRetrievePermissions = true; // Ignore this variable, it is to trick the computer because I don't know XD (seriously though, keep it as is, unless you know better)
+            } else {
+                logMessage(ERROR, "Failed to remove read-only attribute on file '" + filePath "'");
+                return false;
+            }
+        }
+
+        // Creates a temporary file with attributes from the other file, then tests its write privileges
+        HANDLE fileHandle = CreateFile(filePath.c_str(), GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (fileHandle != INVALID_HANDLE_VALUE) {
+            CloseHandle(fileHandle);
+            logMessage(INFO, "Write access verified on file '" + filePath + "'");
             return true;
         }
 #else
+        struct stat fileStat; // Creates a stat structure for the file
+        if (stat(filePath.c_str(), &fileStat) == 0) { // If it successfully gets the stats
+            isExecutable = (fileStat.st_mode & S_IXUSR) || (fileStat.st_mode & S_IXGRP); // Checks for owner or group execution privileges and sets the boolean accordingly
+        } else {
+            logMessage(WARNING, "Failed to obtain stats on file '" + filePath + "'");
+        }
+
         // On POSIX systems, ensure full permissions
-        if (chmod(filePath.c_str(), S_IRUSR | S_IWUSR | S_IXUSR) == 0) {
+        int ret = 0; // To store the exit result
+
+        if (isExecutable) { // Determines whether to change the permissions with execute or not
+            ret = chmod(filePath.c_str(), S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP | S_IROTH | S_IWOTH | S_IXOTH);
+        } else {
+            ret = chmod(filePath.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+        }
+
+        if (ret == 0) { // Based on exit value of chmod
             logMessage(INFO, "Permissions updated on file '" + filePath + "'");
+        } else {
+            logMessage(ERROR, "Permissions failed to change on file '" + filePath + "'");
+            return false;
         }
 #endif
-
-        // Step 2: Attempt to remove extended attributes (Linux/macOS)
+        // Attempt to remove extended attributes (Linux/macOS)
 #ifndef _WIN32
         logMessage(INFO, "Clearing extended attributes on file '" + filePath + "'");
+
         // Extended attributes are system-dependent, handled here if supported
-        if (system(("xattr -c " + filePath + " 2>/dev/null").c_str()) == 0) {
+        if (system(("xattr -c \"" + filePath + "\" 2>/dev/null").c_str()) == 0) { // Mac / Linux
             logMessage(INFO, "Extended attributes cleared on file '" + filePath + "'");
-            writePermission = true;
-            failedToRetrievePermissions = true;
-            return true;
+        } 
+        else if (system(("attr -r \"\" \"" + filePath + "\" 2>/dev/null").c_str()) == 0) { // Linux
+            logMessage(INFO, "Extended attributes cleared on file '" + filePath + "'");
+        } 
+        else { // no
+            logMessage(WARNING, "Failed to clear extended attributes on file '" + filePath + "'");
         }
 #endif
+        if (access(filePath.c_str(), W_OK) == 0) { // If the file has write permissions
+            logMessage(INFO, "Write access verified on file '" + filePath + "'");
+            writePermission = true;
+            failedToRetrievePermissions = true; // Ignore this boolean (important)
+            return true;
+        }
     } catch (const fs::filesystem_error) {
         logMessage(ERROR, "Filesystem error for file '" + filePath + "'");
     } catch (const std::exception) {
