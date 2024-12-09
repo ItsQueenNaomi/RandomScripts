@@ -17,7 +17,7 @@
 */
 /*
 File and Directory Shredder
-Version: 8
+Version: 8b
 Author: Aristotle Daskaleas (2024)
 Changelog (since v1):
     -> Removed multithreading due to file handling conflicts
@@ -53,6 +53,7 @@ Changelog (since v1):
     -> Improved permission checking and changing with extended attributes
     -> Fixed a bug pertaining to incorrectly reporting that the file failed to delete
     -> Simplified some variables
+    -> Improved verification handling
 To-do:
     -> Nothing.
 
@@ -134,6 +135,7 @@ enum logLevel { // Define valid log levels
 #ifdef OPENSSL_FOUND // Only declares these prototypes if compiling with OpenSSL (since it's required)
     int verifyWithHash(const std::string& filePath, const std::vector<char>& expectedData, const int& hash);
     std::string computeSHA256(const std::string& data);
+    bool hashVerified = false;
 #endif
 int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize, int pass = 1);
 bool shredFile(const fs::path& filePath);
@@ -490,6 +492,7 @@ void cleanupMetadata(std::string& filePath) {
     }
 
     int verifyWithHash(const std::string& filePath, const std::vector<char>& expectedData, const int& pass) {
+        hashVerified = false;
         std::ifstream file(filePath, std::ios::binary); // Opens input (binary) stream for file (rb)
         if (!file.is_open()) { // If the file doesn't open
             logMessage(ERROR, "File " + filePath + "failed to open for hashing. Attempting fallback..");
@@ -502,9 +505,10 @@ void cleanupMetadata(std::string& filePath) {
         std::string expectedHash = computeSHA256(std::string(expectedData.begin(), expectedData.end())); // Calculates hash from saved data
 
         if (fileHash == expectedHash) { // Only if they are identical will we say it succeeded
-            logMessage(INFO, "Successfully verified file hash for '" + filePath + "' on pass " + std::to_string(pass));
+            hashVerified = true;
         } else {
             logMessage(WARNING, "Hash mismatch for '" + filePath + "' on pass " + std::to_string(pass));
+            hashVerified = false;
             return 2; // Triggers verification failed for calling function
         }
         return 0; // Triggers verification success
@@ -586,7 +590,12 @@ bool shredFile(const fs::path& filePath) {
             if (overwriteWithRandomData(filePath.string(), file, fileSize, i + 1) == 1) {
                 verificationFailed = 1; // Overwrite function returns 1 if verification fails
             }
+#ifndef OPENSSL_FOUND
             logMessage(INFO, "Completed overwrite pass " + std::to_string(i + 1) + " for file '" + filePath.string() + "'"); // Prints pass count
+#else
+            if (hashVerified) { logMessage(INFO, "Completed overwrite pass " + std::to_string(i + 1) + " for file '" + filePath.string() + "'"); } // Prints pass count
+                else { logMessage(INFO, "Overwrite pass " + std::to_string(i + 1) + " failed for file '" + filePath.string() + "' due to hash mismatch"); } // If hash was not verified
+#endif
             std::cout << "Progress: " << std::fixed << std::setprecision(1)  // Percent-style progress meter
                       << ((i + 1) / static_cast<float>(overwriteCount)) * 100 << "%\r" << std::flush;
         }
@@ -798,7 +807,13 @@ bool hasWritePermission(const fs::path& path) {
 
     if (geteuid() == 0) { writePermission = true; } // If root, bypass this check
 
-    return writePermission;
+    if (!writePermission) { // In case the checks fail, yet the user has write permissions
+        if (access(path.c_str(), W_OK) == 0) {
+            writePermission = true;
+        }
+    }
+
+    return writePermission; // False unless any checks succeeded
 #endif
 }
 
