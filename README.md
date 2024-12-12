@@ -1,4 +1,4 @@
-This is a basic repo that I will not be updating frequently, but contain some scripts that I think are pretty good and you might like.
+This is a basic repository that I will likely not be updating frequently, but contain some scripts that I think some people might find useful.
 
 
 All software offered in this repository are subject to the GNU General Public License which can be referenced in the LICENSE file found in the root of the repo.
