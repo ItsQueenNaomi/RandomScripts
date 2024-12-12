@@ -17,7 +17,7 @@
 */
 /*
 File and Directory Shredder
-Version: 8b
+Version: 9b
 Author: Aristotle Daskaleas (2024)
 Changelog (since v1):
     -> Removed multithreading due to file handling conflicts
@@ -54,25 +54,31 @@ Changelog (since v1):
     -> Fixed a bug pertaining to incorrectly reporting that the file failed to delete
     -> Simplified some variables
     -> Improved verification handling
+    -> Modified flag parsing (and added long options)
+    -> Updated help function and added a personalized disclosure based of compilation parameters
+    -> Also specified '[num]' after the -n|--overwrite-count descriptions (for those people)
+    -> Moved start time commands to after the internal flag info (as it was counting as time)
 To-do:
     -> Nothing.
 
 Current full compilation flag: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto
 */
-#include <iostream>     // For console logging
-#include <fstream>      // For file operations (writing)
-#include <iomanip>      // For formatting log files
-#include <filesystem>   // For file/directory operations (stats)
-#include <random>       // For generating random data
-#include <chrono>       // For time measurements
-#include <string>       // For string manipulation
-#include <mutex>        // For secure file name generation
-#include <vector>       // For buffer storage
-#include <cstring>      // For std::memcpy
-#include <thread>       // For sleeping (std::this_thread::sleep_for)
-#include <algorithm>    // For std::transform
-#include <stdexcept>    // For exceptions
-#include <cstdlib>      // For environment variables
+#include <iostream>       // For console logging
+#include <fstream>        // For file operations (writing)
+#include <iomanip>        // For formatting log files
+#include <filesystem>     // For file/directory operations (stats)
+#include <random>         // For generating random data
+#include <chrono>         // For time measurements
+#include <string>         // For string manipulation
+#include <mutex>          // For secure file name generation
+#include <vector>         // For buffer storage
+#include <cstring>        // For std::memcpy
+#include <thread>         // For sleeping (std::this_thread::sleep_for)
+#include <algorithm>      // For std::transform
+#include <stdexcept>      // For exceptions
+#include <cstdlib>        // For environment variables
+#include <unordered_map>  // For unordered maps
+#include <functional>     // For lambda functions within maps
 
 #ifdef __linux__
 #include <sys/statvfs.h>  // For block size retrieval
@@ -97,7 +103,7 @@ Current full compilation flag: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib
 #endif
 
 #ifdef OPENSSL_FOUND
-#include <openssl/evp.h> // For hashing
+#include <openssl/evp.h>  // For hashing
 #endif
 
 namespace fs = std::filesystem; // Makes linking commands from the 'std::filesystem' easier
@@ -118,8 +124,6 @@ bool failedToRetrievePermissions = false; // Global boolean to indicate if permi
 bool bufferSizePrinted = false; // Global boolean to indicate if the buffer size was already printed
 bool verificationFailed = false; // Global boolean to determine if verification failed (used in multiple functions)
 bool writePermission = false; // Global boolean to determine if the current file being process has write permissions
-
-const std::string validFlags = "nrkvfsdchei"; // Indicated valid program flags
 
 std::mutex fileMutex; // Defines file name generation variable
 
@@ -156,12 +160,6 @@ bool isRegularFile(const fs::path& file) { return fs::is_regular_file(file); } /
 int main(int argc, char* argv[]) {
     std::vector<std::string> fileArgs = parseArguments(argc, argv); // Initialize vector
 
-    auto startT = std::chrono::system_clock::now(); // For start time (printed at start of program)
-    auto startTime = std::chrono::high_resolution_clock::now(); // For end time (when it is subtracted later)
-
-    std::time_t start_time_t = std::chrono::system_clock::to_time_t(startT); // Retrieves current time
-    std::tm local_tm = *std::localtime(&start_time_t); // Converts it to local time
-
     if (internal) { // Funny extra feature for people in the know about this flag (outputs parameters, files, and a confirmation)
         // Sets flags to strings for readability
         std::string recursiveStr = (recursive ? "true" : "false");
@@ -184,6 +182,12 @@ int main(int argc, char* argv[]) {
         std::transform(reply.begin(), reply.end(), reply.begin(), ::tolower); // Transforms case into lowercase
         if (reply == "y") { } else if (reply == "yes") { } else { return 3; } // Unless 'y' or 'yes' is specified, we're done
     }
+
+    auto startT = std::chrono::system_clock::now(); // For start time (printed at start of program)
+    auto startTime = std::chrono::high_resolution_clock::now(); // For end time (when it is subtracted later)
+
+    std::time_t start_time_t = std::chrono::system_clock::to_time_t(startT); // Retrieves current time
+    std::tm local_tm = *std::localtime(&start_time_t); // Converts it to local time
 
     std::cout << "Beginning Shred at: " << std::put_time(&local_tm, "%H:%M:%S") << std::endl; // Prints start time to user terminal
 
@@ -209,72 +213,100 @@ int main(int argc, char* argv[]) {
     return 0; // Success!
 }
 
-std::vector<std::string> parseArguments(int argc, char* argv[]) { // Function to parse command line arguments
-    std::vector<std::string> fileArgs; // Initialize vector to store files to shred
-    char* nMsg = new char[38]; // Initilizes char array to store a commonly used message
-    strcpy(nMsg, "Flag '-n' requires a positive integer");
-    
+std::vector<std::string> parseArguments(int argc, char* argv[]) {
+    std::vector<std::string> fileArgs; // Store file paths
+    std::string nMsg = "Flag '-n' or '--number' requires a positive integer";
+    int i;
+
+    // Define short flag handlers
+    std::unordered_map<char, std::function<void(size_t&, const std::string&)>> shortFlagActions = {
+        {'h', [&](size_t&, const std::string&) { help(argv); errorExit(2); }},
+        {'n', [&](size_t& j, const std::string& arg) { 
+            size_t start = j + 1, end = start;
+            while (end < arg.size() && std::isdigit(arg[end])) {
+                ++end;
+            }
+            if (start < end) {
+                try {
+                    overwriteCount = std::stoi(arg.substr(start, end - start));
+                    j = end - 1;
+                } catch (...) {
+                    errorExit(1, nMsg);
+                }
+            } else if (j + 1 < argc) {
+                try {
+                    overwriteCount = std::stoi(argv[++j]);
+                } catch (...) {
+                    errorExit(1, nMsg);
+                }
+            } else {
+                errorExit(1, nMsg);
+            }
+        }},
+        {'r', [&](size_t&, const std::string&) { recursive = true; }},
+        {'k', [&](size_t&, const std::string&) { keep_files = true; }},
+        {'v', [&](size_t&, const std::string&) { verbose = true; }},
+        {'e', [&](size_t&, const std::string&) { follow_symlinks = true; }},
+        {'s', [&](size_t&, const std::string&) { secure_mode = true; }},
+        {'d', [&](size_t&, const std::string&) { dry_run = true; }},
+        {'c', [&](size_t&, const std::string&) { verify = false; }},
+        {'f', [&](size_t&, const std::string&) { force_delete = true; }},
+    };
+
+    // Define long option handlers
+    std::unordered_map<std::string, std::function<void()>> longOptionActions = {
+        {"help", [&]() { help(argv); errorExit(2); }},
+        {"overwrite-count", [&]() {
+            if (++i < argc) { 
+                try { overwriteCount = std::stoi(argv[i]); }
+                catch (...) { errorExit(1, nMsg); }
+            } else { errorExit(1, nMsg); }
+        }},
+        {"recursive", [&]() { recursive = true; }},
+        {"keep", [&]() { keep_files = true; }},
+        {"verbose", [&]() { verbose = true; }},
+        {"follow-symlinks", [&]() { follow_symlinks = true; }},
+        {"secure", [&]() { secure_mode = true; }},
+        {"dry-run", [&]() { dry_run = true; }},
+        {"no-verify", [&]() { verify = false; }},
+        {"force", [&]() { force_delete = true; }},
+        {"internal", [&]() { internal = true; }},
+    };
+
     // Parse command-line arguments
-    for (int i = 1; i < argc; ++i) { // Iterates over input length
-        std::string arg = argv[i]; // Initializes position in argument to iteration
+    for (i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
 
-        if (arg[0] == '-') { // Searches for a word starting with a hyphen
-            for (size_t j = 1; j < arg.size(); ++j) { // Gets size of word and iterates the individual letter(s)
-                char flag = arg[j]; // Splits all letters following a '-'
-                if (validFlags.find(flag) != std::string::npos) { // Validates all characters from validFlags
-                    // Checks for valid flags and change program's operation accordingly
-                    switch (flag) { // Set flag variable to the letter and continue
-                        case 'h': help(argv); errorExit(2); // Gets help and exits
-                        case 'n': { // Changes overwrite count
-                            size_t start = j + 1; // Gets start of number
-                            size_t end = start; // To find the end of the number
-                            while (end < arg.size() && std::isdigit(arg[end])) {
-                                ++end; // Sets end to position of the integer's last character
-                            }
-
-                            if (start < end) { // If number is found after n (no space)
-                                try {
-                                    overwriteCount = std::stoi(arg.substr(start, end - start)); // Extracts integer
-                                    j = end - 1; // Move cursor to end of integer
-                                } catch (...) {
-                                    errorExit(1, nMsg);
-                                }
-                            } else if (i + 1 < argc) { // If there is a space, look in next argument
-                                try {
-                                    overwriteCount = std::stoi(argv[++i]); // Increments i and moves to the next argument
-                                } catch (...) {
-                                    errorExit(1, nMsg);
-                                }
-                            } else {
-                                errorExit(1, nMsg);
-                            }
-                            break;
-                        }
-                        case 'r': recursive = true; break;
-                        case 'k': keep_files = true; break;
-                        case 'v': verbose = true; break;
-                        case 'e': follow_symlinks = true; break;
-                        case 's': secure_mode = true; break;
-                        case 'd': dry_run = true; break;
-                        case 'c': verify = false; break;
-                        case 'f': force_delete = true; break;
-                        case 'i': internal = true; break;
+        if (arg[0] == '-') {
+            if (arg[1] == '-') { // Handle long options
+                std::string longOption = arg.substr(2);
+                auto action = longOptionActions.find(longOption);
+                if (action != longOptionActions.end()) {
+                    action->second();
+                } else {
+                    errorExit(1, "Invalid option", "--" + longOption);
+                }
+            } else { // Handle short flags
+                for (size_t j = 1; j < arg.size(); ++j) {
+                    char flag = arg[j];
+                    auto action = shortFlagActions.find(flag);
+                    if (action != shortFlagActions.end()) {
+                        action->second(j, arg); // Call corresponding lambda
+                    } else {
+                        errorExit(1, "Invalid flag", std::string(1, flag));
                     }
-                } else { // If the character was not validated, deuces
-                    delete[] nMsg;
-                    std::string flg(1, flag); // Sets 'flg' string to the content of the flag char
-                    errorExit(1, "Invalid flag", flg); // Calls the exit with the variables
                 }
             }
-        } else { // Append all non-flag arguments to the file argument vector
+        } else { // Handle non-flag arguments (files)
             fileArgs.emplace_back(arg);
         }
     }
 
-    // Check if any files were provided
-    if (fileArgs.empty()) { // Suggest help if no
-        errorExit(1, "Incorrect usage. Use '-h' for help");
+    // Ensure at least one file argument is provided
+    if (fileArgs.empty()) {
+        errorExit(1, "Incorrect usage. Use '-h' or '--help' for help");
     }
+
     return fileArgs;
 }
 
@@ -593,7 +625,7 @@ bool shredFile(const fs::path& filePath) {
 #ifndef OPENSSL_FOUND
             logMessage(INFO, "Completed overwrite pass " + std::to_string(i + 1) + " for file '" + filePath.string() + "'"); // Prints pass count
 #else
-            if (hashVerified) { logMessage(INFO, "Completed overwrite pass " + std::to_string(i + 1) + " for file '" + filePath.string() + "'"); } // Prints pass count
+            if (hashVerified) { logMessage(INFO, "Completed overwrite pass " + std::to_string(i + 1) + " for file '" + filePath.string() + "' and the hash was successfully verified"); } // Prints pass count
                 else { logMessage(INFO, "Overwrite pass " + std::to_string(i + 1) + " failed for file '" + filePath.string() + "' due to hash mismatch"); } // If hash was not verified
 #endif
             std::cout << "Progress: " << std::fixed << std::setprecision(1)  // Percent-style progress meter
@@ -857,9 +889,9 @@ bool changePermissions(const std::string &filePath) {
         int ret = 0; // To store the exit result
 
         if (isExecutable) { // Determines whether to change the permissions with execute or not
-            ret = chmod(filePath.c_str(), S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP | S_IROTH | S_IWOTH | S_IXOTH);
+            ret = chmod(filePath.c_str(), S_IRWXU | S_IRWXG | S_IRWXO); // rwxrwxrwx
         } else {
-            ret = chmod(filePath.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+            ret = chmod(filePath.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH); // rw-rw-rw
         }
 
         if (ret == 0) { // Based on exit value of chmod
@@ -910,12 +942,15 @@ void help(char* argv[]) { // The print help functon (At bottom due to size and l
     std::cerr << "    " << argv[0] << " is a tool designed to securely overwrite and remove files and directories.\n";
     std::cerr << "    By default, it overwrites the specified files with random data and removes them, ensuring that\n";
     std::cerr << "    data is unrecoverable. The tool offers various options for customizing the shredding process.\n";
-    std::cerr << "    This tool almost conforms to DoD 5220.22-M when the '-s' flag is used without the '-c' flag, and\n";
+    std::cerr << "    This tool almost conforms to DoD 5220.22-M when the '--secure' flag is used without the '--no-verify' flag, and\n";
     std::cerr << "    this tool does not conform due to the unnecessary complexity (which enhances the security of the shred).\n";
     std::cerr << "    This program will exit 2 on this dialogue, 1 on failure, and 0 on success.\n\n";
-
+#ifdef OPENSSL_FOUND
+    std::cerr << "    Since this program was compiled with OpenSSL, the file verification function uses SHA256 hashing,\n";
+    std::cerr << "    which is more efficient, secure, and accurate for file shredding confirmation.\n\n";
+#endif
     std::cerr << "OPTIONS\n";
-    std::cerr << "    -n <overwrites>       Set number of overwrites (default: 3)\n";
+    std::cerr << "    -n [num] <overwrites> Set number of overwrites (default: 3)\n";
     std::cerr << "    -r <recursive>        Enable recursive mode to shred directories and their contents\n";
     std::cerr << "    -k <keep files>       Keep files after overwriting (no removal)\n";
     std::cerr << "    -v <verbose>          Enable verbose output for detailed logging\n";
@@ -926,38 +961,38 @@ void help(char* argv[]) { // The print help functon (At bottom due to size and l
     std::cerr << "    -f <force>            Force delete the files if there is no write permission\n\n";
 
     std::cerr << "DESCRIPTION OF OPTIONS\n";
-    std::cerr << "    -n <overwrites>\n";
+    std::cerr << "    -n [num], --overwrite-count [num] <overwrites>\n";
     std::cerr << "        Specifies the number of overwriting passes. By default, 3 passes are performed, but you can increase\n";
     std::cerr << "        this number for higher security. More passes will make the process slower.\n\n";
 
-    std::cerr << "    -r <recursive>\n";
+    std::cerr << "    -r, --recursive <recursive>\n";
     std::cerr << "        Enables recursive mode. If set, the program will shred the contents of directories as well as the\n";
     std::cerr << "        files themselves. Without this flag, only files are processed.\n\n";
 
-    std::cerr << "    -k <keep files>\n";
+    std::cerr << "    -k, --keep-files <keep files>\n";
     std::cerr << "        If set, files will be overwritten with random data, but they will not be deleted. This option is useful\n";
     std::cerr << "        if you want to securely wipe a file's contents but retain the file itself.\n\n";
 
-    std::cerr << "    -v <verbose>\n";
+    std::cerr << "    -v, --verbose <verbose>\n";
     std::cerr << "        Enables verbose output, printing detailed information about each step of the shredding process.\n";
     std::cerr << "        Useful for debugging or confirming that the program is functioning as expected.\n\n";
 
-    std::cerr << "    -e <follow symlinks>\n";
+    std::cerr << "    -e, --follow-symlinks <follow symlinks>\n";
     std::cerr << "        Follow symbolic links and include them in the shredding process. Without this flag, symlinks are ignored.\n\n";
 
-    std::cerr << "    -s <secure mode>\n";
+    std::cerr << "    -s, --secure <secure mode>\n";
     std::cerr << "        Enables secure shredding with byte-level randomization, making data recovery significantly more difficult.\n";
     std::cerr << "        This mode is slower due to the added security, but it provides stronger protection against data recovery.\n\n";
 
-    std::cerr << "    -d <dry run>\n";
+    std::cerr << "    -d, --dry-run <dry run>\n";
     std::cerr << "        Simulates the shredding process without performing any actual deletion. Use this to verify which files\n";
     std::cerr << "        would be affected before running the program for real.\n\n";
 
-    std::cerr << "    -c <no verification>\n";
+    std::cerr << "    -c, --no-verify <no verification>\n";
     std::cerr << "        Disables the post-shredding file verification. Normally, the tool verifies that files have been overwritten\n";
     std::cerr << "        after shredding, but this step can be skipped with this option for faster operation.\n\n";
 
-    std::cerr << "    -f <force>\n";
+    std::cerr << "    -f, --force <force>\n";
     std::cerr << "        Will attempt to change file permissions and remove extended attributes to attempt to delete files which\n";
     std::cerr << "        do not currently have effective write permission, use this for stubborn files.\n\n";
 
