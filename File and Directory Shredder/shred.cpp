@@ -17,7 +17,7 @@
 */
 /*
 File and Directory Shredder
-Version: 9b
+Version: 9c
 Author: Aristotle Daskaleas (2024)
 Changelog (since v1):
     -> Removed multithreading due to file handling conflicts
@@ -58,13 +58,19 @@ Changelog (since v1):
     -> Updated help function and added a personalized disclosure based of compilation parameters
     -> Also specified '[num]' after the -n|--overwrite-count descriptions (for those people)
     -> Moved start time commands to after the internal flag info (as it was counting as time)
+    -> Added a version flag and updated the copyright year appearing in the help menu to appear from a variable
+    -> Added 2 variables 'VERSION' (program version) and 'CW_YEAR' (copyright year) to store the values for later use
+    -> Modifed the 'nMsg' variable to include nuances for the long and character flag options
 To-do:
     -> Nothing.
 
 Current full compilation flag: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto
 */
+const char* VERSION = "9c"; // Define program version for later use
+const char* CW_YEAR = "2024"; // Define copyright year for later use
+
 #include <iostream>       // For console logging
-#include <fstream>        // For file operations (writing)
+#include <fstream>        // For file operations (reading/writing)
 #include <iomanip>        // For formatting log files
 #include <filesystem>     // For file/directory operations (stats)
 #include <random>         // For generating random data
@@ -151,6 +157,7 @@ void logMessage(logLevel type, const std::string& message);
 void errorExit(int value = 1, std::string message = "", std::string flag = "");
 void cleanupMetadata(std::string& filePath);
 void help(char* argv[]);
+void version(const char* argv[]);
 std::vector<std::string> parseArguments(int argc, char* argv[]);
 std::uintmax_t getOptimalBlockSize();
 std::string generateRandomFileName(size_t length = 32);
@@ -215,12 +222,14 @@ int main(int argc, char* argv[]) {
 
 std::vector<std::string> parseArguments(int argc, char* argv[]) {
     std::vector<std::string> fileArgs; // Store file paths
-    std::string nMsg = "Flag '-n' or '--number' requires a positive integer";
+    std::string nfMsg = "Flag '-n' requires a positive integer";
+    std::string nlMsg = "Flag '--number' requires a positive integer";
+    
     int i;
 
     // Define short flag handlers
     std::unordered_map<char, std::function<void(size_t&, const std::string&)>> shortFlagActions = {
-        {'h', [&](size_t&, const std::string&) { help(argv); errorExit(2); }},
+        {'h', [&](size_t&, const std::string&) { help(argv); }},
         {'n', [&](size_t& j, const std::string& arg) { 
             size_t start = j + 1, end = start;
             while (end < arg.size() && std::isdigit(arg[end])) {
@@ -231,16 +240,16 @@ std::vector<std::string> parseArguments(int argc, char* argv[]) {
                     overwriteCount = std::stoi(arg.substr(start, end - start));
                     j = end - 1;
                 } catch (...) {
-                    errorExit(1, nMsg);
+                    errorExit(1, nfMsg);
                 }
             } else if (j + 1 < argc) {
                 try {
                     overwriteCount = std::stoi(argv[++j]);
                 } catch (...) {
-                    errorExit(1, nMsg);
+                    errorExit(1, nfMsg);
                 }
             } else {
-                errorExit(1, nMsg);
+                errorExit(1, nfMsg);
             }
         }},
         {'r', [&](size_t&, const std::string&) { recursive = true; }},
@@ -251,16 +260,17 @@ std::vector<std::string> parseArguments(int argc, char* argv[]) {
         {'d', [&](size_t&, const std::string&) { dry_run = true; }},
         {'c', [&](size_t&, const std::string&) { verify = false; }},
         {'f', [&](size_t&, const std::string&) { force_delete = true; }},
+        {'V', [&](size_t&, const std::string&) { version(argv); }},
     };
 
     // Define long option handlers
     std::unordered_map<std::string, std::function<void()>> longOptionActions = {
-        {"help", [&]() { help(argv); errorExit(2); }},
+        {"help", [&]() { help(argv); }},
         {"overwrite-count", [&]() {
             if (++i < argc) { 
                 try { overwriteCount = std::stoi(argv[i]); }
-                catch (...) { errorExit(1, nMsg); }
-            } else { errorExit(1, nMsg); }
+                catch (...) { errorExit(1, nlMsg); }
+            } else { errorExit(1, nlMsg); }
         }},
         {"recursive", [&]() { recursive = true; }},
         {"keep", [&]() { keep_files = true; }},
@@ -271,6 +281,7 @@ std::vector<std::string> parseArguments(int argc, char* argv[]) {
         {"no-verify", [&]() { verify = false; }},
         {"force", [&]() { force_delete = true; }},
         {"internal", [&]() { internal = true; }},
+        {"version", [&]() { version(argv); }},
     };
 
     // Parse command-line arguments
@@ -932,89 +943,106 @@ bool changePermissions(const std::string &filePath) {
 }
 
 void help(char* argv[]) { // The print help functon (At bottom due to size and lack of functionality)
-    std::cerr << "NAME\n";
-    std::cerr << "    " << argv[0] << " - Securely overwrite and remove files\n\n";
+    std::cerr << "NAME" << std::endl;
+    std::cerr << "    " << argv[0] << " - Securely overwrite and remove files\n" << std::endl;
 
-    std::cerr << "SYNOPSIS\n";
-    std::cerr << "    " << argv[0] << " [OPTIONS] <file1> <file2> ...\n\n";
+    std::cerr << "SYNOPSIS" << std::endl;
+    std::cerr << "    " << argv[0] << " [OPTIONS] <file1> <file2> ...\n" << std::endl;
 
-    std::cerr << "DESCRIPTION\n";
-    std::cerr << "    " << argv[0] << " is a tool designed to securely overwrite and remove files and directories.\n";
-    std::cerr << "    By default, it overwrites the specified files with random data and removes them, ensuring that\n";
-    std::cerr << "    data is unrecoverable. The tool offers various options for customizing the shredding process.\n";
-    std::cerr << "    This tool almost conforms to DoD 5220.22-M when the '--secure' flag is used without the '--no-verify' flag, and\n";
-    std::cerr << "    this tool does not conform due to the unnecessary complexity (which enhances the security of the shred).\n";
-    std::cerr << "    This program will exit 2 on this dialogue, 1 on failure, and 0 on success.\n\n";
+    std::cerr << "DESCRIPTION" << std::endl;
+    std::cerr << "    " << argv[0] << " is a tool designed to securely overwrite and remove files and directories." << std::endl;
+    std::cerr << "    By default, it overwrites the specified files with random data and removes them, ensuring that" << std::endl;
+    std::cerr << "    data is unrecoverable. The tool offers various options for customizing the shredding process." << std::endl;
+    std::cerr << "    This tool almost conforms to DoD 5220.22-M when the '--secure' flag is used without the '--no-verify' flag, and" << std::endl;
+    std::cerr << "    this tool does not conform due to the unnecessary complexity (which enhances the security of the shred)." << std::endl;
+    std::cerr << "    This program will exit 2 on this dialogue, 1 on failure, and 0 on success.\n" << std::endl;
 #ifdef OPENSSL_FOUND
-    std::cerr << "    Since this program was compiled with OpenSSL, the file verification function uses SHA256 hashing,\n";
-    std::cerr << "    which is more efficient, secure, and accurate for file shredding confirmation.\n\n";
+    std::cerr << "    Since this program was compiled with OpenSSL, the file verification function uses SHA256 hashing," << std::endl;
+    std::cerr << "    which is more efficient, secure, and accurate for file shredding confirmation.\n" << std::endl;
 #endif
-    std::cerr << "OPTIONS\n";
-    std::cerr << "    -n [num] <overwrites> Set number of overwrites (default: 3)\n";
-    std::cerr << "    -r <recursive>        Enable recursive mode to shred directories and their contents\n";
-    std::cerr << "    -k <keep files>       Keep files after overwriting (no removal)\n";
-    std::cerr << "    -v <verbose>          Enable verbose output for detailed logging\n";
-    std::cerr << "    -e <follow symlinks>  Follow symlinks during shredding\n";
-    std::cerr << "    -s <secure mode>      Enable secure shredding with randomization (slower)\n";
-    std::cerr << "    -d <dry run>          Show what would be shredded without actual processing\n";
-    std::cerr << "    -c <no verification>  Skip post-shredding verification (faster)\n";
-    std::cerr << "    -f <force>            Force delete the files if there is no write permission\n\n";
+    std::cerr << "OPTIONS" << std::endl;
+    std::cerr << "    -h, --help            Print this help dialogue and exit with code 2" << std::endl;
+    std::cerr << "    -V <version>          Print the program version and exit" << std::endl;
+    std::cerr << "    -n [num] <overwrites> Set number of overwrites (default: 3)" << std::endl;
+    std::cerr << "    -r <recursive>        Enable recursive mode to shred directories and their contents" << std::endl;
+    std::cerr << "    -k <keep files>       Keep files after overwriting (no removal)" << std::endl;
+    std::cerr << "    -v <verbose>          Enable verbose output for detailed logging" << std::endl;
+    std::cerr << "    -e <follow symlinks>  Follow symlinks during shredding" << std::endl;
+    std::cerr << "    -s <secure mode>      Enable secure shredding with randomization (slower)" << std::endl;
+    std::cerr << "    -d <dry run>          Show what would be shredded without actual processing" << std::endl;
+    std::cerr << "    -c <no verification>  Skip post-shredding verification (faster)" << std::endl;
+    std::cerr << "    -f <force>            Force delete the files if there is no write permission\n" << std::endl;
 
-    std::cerr << "DESCRIPTION OF OPTIONS\n";
-    std::cerr << "    -n [num], --overwrite-count [num] <overwrites>\n";
-    std::cerr << "        Specifies the number of overwriting passes. By default, 3 passes are performed, but you can increase\n";
-    std::cerr << "        this number for higher security. More passes will make the process slower.\n\n";
+    std::cerr << "DESCRIPTION OF OPTIONS" << std::endl;
+    std::cerr << "    -V, --version <version>" << std::endl;
+    std::cerr << "        This option will print the currently installed program version and exit with code 2," << std::endl;
+    std::cerr << "        useful to quickly determine the installed version or view basic copyright information.\n" << std::endl;
 
-    std::cerr << "    -r, --recursive <recursive>\n";
-    std::cerr << "        Enables recursive mode. If set, the program will shred the contents of directories as well as the\n";
-    std::cerr << "        files themselves. Without this flag, only files are processed.\n\n";
+    std::cerr << "    -n [num], --overwrite-count [num] <overwrites>" << std::endl;
+    std::cerr << "        Specifies the number of overwriting passes. By default, 3 passes are performed, but you can increase" << std::endl;
+    std::cerr << "        this number for higher security. More passes will make the process slower.\n" << std::endl;
 
-    std::cerr << "    -k, --keep-files <keep files>\n";
-    std::cerr << "        If set, files will be overwritten with random data, but they will not be deleted. This option is useful\n";
-    std::cerr << "        if you want to securely wipe a file's contents but retain the file itself.\n\n";
+    std::cerr << "    -r, --recursive <recursive>" << std::endl;
+    std::cerr << "        Enables recursive mode. If set, the program will shred the contents of directories as well as the" << std::endl;
+    std::cerr << "        files themselves. Without this flag, only files are processed.\n" << std::endl;
 
-    std::cerr << "    -v, --verbose <verbose>\n";
-    std::cerr << "        Enables verbose output, printing detailed information about each step of the shredding process.\n";
-    std::cerr << "        Useful for debugging or confirming that the program is functioning as expected.\n\n";
+    std::cerr << "    -k, --keep-files <keep files>" << std::endl;
+    std::cerr << "        If set, files will be overwritten with random data, but they will not be deleted. This option is useful" << std::endl;
+    std::cerr << "        if you want to securely wipe a file's contents but retain the file itself.\n" << std::endl;
 
-    std::cerr << "    -e, --follow-symlinks <follow symlinks>\n";
-    std::cerr << "        Follow symbolic links and include them in the shredding process. Without this flag, symlinks are ignored.\n\n";
+    std::cerr << "    -v, --verbose <verbose>" << std::endl;
+    std::cerr << "        Enables verbose output, printing detailed information about each step of the shredding process." << std::endl;
+    std::cerr << "        Useful for debugging or confirming that the program is functioning as expected.\n" << std::endl;
 
-    std::cerr << "    -s, --secure <secure mode>\n";
-    std::cerr << "        Enables secure shredding with byte-level randomization, making data recovery significantly more difficult.\n";
-    std::cerr << "        This mode is slower due to the added security, but it provides stronger protection against data recovery.\n\n";
+    std::cerr << "    -e, --follow-symlinks <follow symlinks>" << std::endl;
+    std::cerr << "        Follow symbolic links and include them in the shredding process. Without this flag, symlinks are ignored.\n" << std::endl;
 
-    std::cerr << "    -d, --dry-run <dry run>\n";
-    std::cerr << "        Simulates the shredding process without performing any actual deletion. Use this to verify which files\n";
-    std::cerr << "        would be affected before running the program for real.\n\n";
+    std::cerr << "    -s, --secure <secure mode>" << std::endl;
+    std::cerr << "        Enables secure shredding with byte-level randomization, making data recovery significantly more difficult." << std::endl;
+    std::cerr << "        This mode is slower due to the added security, but it provides stronger protection against data recovery.\n" << std::endl;
 
-    std::cerr << "    -c, --no-verify <no verification>\n";
-    std::cerr << "        Disables the post-shredding file verification. Normally, the tool verifies that files have been overwritten\n";
-    std::cerr << "        after shredding, but this step can be skipped with this option for faster operation.\n\n";
+    std::cerr << "    -d, --dry-run <dry run>" << std::endl;
+    std::cerr << "        Simulates the shredding process without performing any actual deletion. Use this to verify which files" << std::endl;
+    std::cerr << "        would be affected before running the program for real.\n" << std::endl;
 
-    std::cerr << "    -f, --force <force>\n";
-    std::cerr << "        Will attempt to change file permissions and remove extended attributes to attempt to delete files which\n";
-    std::cerr << "        do not currently have effective write permission, use this for stubborn files.\n\n";
+    std::cerr << "    -c, --no-verify <no verification>" << std::endl;
+    std::cerr << "        Disables the post-shredding file verification. Normally, the tool verifies that files have been overwritten" << std::endl;
+    std::cerr << "        after shredding, but this step can be skipped with this option for faster operation.\n" << std::endl;
 
-    std::cerr << "EXAMPLES\n";
-    std::cerr << "    " << argv[0] << " -n 5 -r -v -s file1.txt file2.txt directory1\n";
-    std::cerr << "        Overwrites 'file1.txt' and 'file2.txt' with 5 passes, recursively handles 'directory1', and uses secure\n";
-    std::cerr << "        mode with verbose output.\n\n";
+    std::cerr << "    -f, --force <force>" << std::endl;
+    std::cerr << "        Will attempt to change file permissions and remove extended attributes to attempt to delete files which" << std::endl;
+    std::cerr << "        do not currently have effective write permission, use this for stubborn files.\n" << std::endl;
 
-    std::cerr << "    " << argv[0] << " -d file1.txt file2.txt\n";
-    std::cerr << "        Performs a dry run to show what would be shredded without actual deletion.\n\n";
+    std::cerr << "EXAMPLES" << std::endl;
+    std::cerr << "    " << argv[0] << " -n 5 -r -v -s file1.txt file2.txt directory1" << std::endl;
+    std::cerr << "        Overwrites 'file1.txt' and 'file2.txt' with 5 passes, recursively handles 'directory1', and uses secure" << std::endl;
+    std::cerr << "        mode with verbose output.\n" << std::endl;
 
-    std::cerr << "COPYRIGHT\n";
-    std::cerr << "    File and directory shredder. It shreds files and directories specified on the command line.\n";
-    std::cerr << "    Copyright (C) 2024  Aristotle Daskaleas\n\n";
-    std::cerr << "    This program is free software: you can redistribute it and/or modify\n";
-    std::cerr << "    it under the terms of the GNU General Public License as published by\n";
-    std::cerr << "    the Free Software Foundation, either version 3 of the License, or\n";
-    std::cerr << "    (at your option) any later version.\n\n";
-    std::cerr << "    This program is distributed in the hope that it will be useful,\n";
-    std::cerr << "    but WITHOUT ANY WARRANTY; without even the implied warranty of\n";
-    std::cerr << "    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n";
-    std::cerr << "    GNU General Public License for more details.\n\n";
-    std::cerr << "    You should have received a copy of the GNU General Public License\n";
-    std::cerr << "    along with this program.  If not, see <https://www.gnu.org/licenses/>.\n";
+    std::cerr << "    " << argv[0] << " -d file1.txt file2.txt" << std::endl;
+    std::cerr << "        Performs a dry run to show what would be shredded without actual deletion.\n" << std::endl;
+
+    std::cerr << "COPYRIGHT" << std::endl;
+    std::cerr << "    File and directory shredder. It shreds files and directories specified on the command line." << std::endl;
+    std::cerr << "    Copyright (C) " << CW_YEAR << " Aristotle Daskaleas\n" << std::endl;
+    std::cerr << "    This program is free software: you can redistribute it and/or modify" << std::endl;
+    std::cerr << "    it under the terms of the GNU General Public License as published by" << std::endl;
+    std::cerr << "    the Free Software Foundation, either version 3 of the License, or" << std::endl;
+    std::cerr << "    (at your option) any later version.\n" << std::endl;
+    std::cerr << "    This program is distributed in the hope that it will be useful," << std::endl;
+    std::cerr << "    but WITHOUT ANY WARRANTY; without even the implied warranty of" << std::endl;
+    std::cerr << "    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the" << std::endl;
+    std::cerr << "    GNU General Public License for more details.\n" << std::endl;
+    std::cerr << "    You should have received a copy of the GNU General Public License" << std::endl;
+    std::cerr << "    along with this program.  If not, see <https://www.gnu.org/licenses/>." << std::endl;
+
+    errorExit(2); // Calls the exit function
+}
+
+void version(const char* argv[]) { // Function to print the program version and basic copyright information
+    std::cerr << argv[0] << " - File and Directory Shredder ver. " << VERSION << std::endl;
+    std::cerr << "Copyright (C) Aristotle Daskaleas " << CW_YEAR << " GNU General Public License" << std::endl;
+    std::cerr << "use '--help' or '-h' to see more copyright information or see <https://www.gnu.org/licenses/>" << std::endl;
+    std::cerr << "for the full license and its terms and conditions." << std::endl;
+
+    errorExit(2); // Exits
 }
