@@ -1,0 +1,5 @@
+To compile any of these programs (which are only supported on UNIX and GNU/Linux systems) execute the following commands in the directory of the scripts:
+
+$ g++ -std=c++20 ./{*}p.cpp -o ./{*}p 
+
+You need compiler version 20 to use std::filesystem, and Windows requires entirely different APIs, which I might implement, but don't expect it.
