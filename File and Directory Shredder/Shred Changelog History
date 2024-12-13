@@ -1,0 +1,48 @@
+Version 1 - Version 10:
+    -> Removed multithreading due to file handling conflicts
+    -> Added better encryption for secure mode
+    -> Commented out redundant functions and debugging code
+    -> Nearly prepared for distribution (probs not tho XD)
+    -> Added a more efficient secure mode overwriting (to make file size not increase dramatically)
+    -> Improved logging function with predefined log levels and making verbosity work
+    -> Cleaned up code
+    -> Unused code is now gone (bye, we won't miss you)
+    -> Improved help dialogue to be more efficient, professional, and visible on small terminals (man page format)
+    -> Added OS-specfic function to determine optimal block size to overwrite
+    -> Make functions only accept required arguments (i.e., no bools since they're global)
+    -> Improved verification for shredding and improved logging
+    -> Added '-i'nternal (not advertised) flag to print some development information [useful for debugging]
+    -> Added excessive comments to appease any readers and the coding gods
+    -> Added more comments and made it so it prints the end time regardless of verbosity
+    -> Modified flag handling function ('-n') so numbers can be specified in the middle of flags (e.g., -kvn50sf instead of requiring -kvsfn50)
+    -> Added a metadata handler for files, which hopefully further percludes data recovery.
+    -> Improved metadata handler
+    -> Refractored code. main() is now basically the first function, and it might be easier to read now, I don't know
+    -> Added a syncFile() function to maintain cross-compatibility.
+    -> Added hashing for verification for systems with OpenSSL
+    -> Improved error handling and logging
+    -> Implemented and improved errorExit() function
+    -> Removed redundant declaration for verificationFailed
+    -> Added more comments (namely for the new code I forgot to comment)
+    -> Added compilation flag section for easy reference, to streamline compliation
+    -> Added write permission checking function
+    -> Improved OpenSSL functions (moved away from the depreciated functions)
+    -> Added force delete flag and changed flag denotation for "follow_symlinks"
+    -> Added permission checking and changing
+    -> Improved permission checking and changing with extended attributes
+    -> Fixed a bug pertaining to incorrectly reporting that the file failed to delete
+    -> Simplified some variables
+    -> Improved verification handling
+    -> Modified flag parsing (and added long options)
+    -> Updated help function and added a personalized disclosure based of compilation parameters
+    -> Also specified '[num]' after the -n|--overwrite-count descriptions (for those people)
+    -> Moved start time commands to after the internal flag info (as it was counting as time)
+    -> Added a version flag and updated the copyright year appearing in the help menu to appear from a variable
+    -> Added 2 variables 'VERSION' (program version) and 'CW_YEAR' (copyright year) to store the values for later use
+    -> Modifed the 'nMsg' variable to include nuances for the long and character flag options (nlMsg / nfMsg)
+    -> Updated version function to expose whether the version was compiled with OpenSSL or not
+    -> Updated all variable declarations to uniform initialization ({})
+    -> Modified VERSION and CW_YEAR variables to const char[] instead of const char* (for the immutable pointer)
+    -> Added an EXIT STATUS section to the help menu
+Version 10 - 11:
+  Not implemented.
