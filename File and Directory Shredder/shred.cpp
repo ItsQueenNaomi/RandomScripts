@@ -17,7 +17,7 @@
 */
 /*
 File and Directory Shredder
-Version: 10.4c
+Version: 10.4d
 Author: Aristotle Daskaleas (2024)
 Changelog (since v10):
     -> As of version 10, format of version is now XX.Xx where X ~ [0-9] and x ~ [a-z]
@@ -44,13 +44,14 @@ Changelog (since v10):
 10.4-> Improved general operability; ensured correctness of log levels
     -> Reduced redundancy in namespaces/functions
     -> Fixed overlooked bug pertaining to exit status - implemented a program structure with an error bool and modified end of main() function to incorporate the structure
+    -> Removed exit status from program description in the --full-help dialogue
 To-do:
     -> Nothing.
 
 Current full compilation flags: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto
 */
 
-const char VERSION[]{"10.4c"}; // Define program version for later use
+const char VERSION[]{"10.4d"}; // Define program version for later use
 const char CW_YEAR[]{"2024"}; // Define copyright year for later use
 
 #include <iostream>       // For console logging
@@ -81,7 +82,7 @@ const char CW_YEAR[]{"2024"}; // Define copyright year for later use
 #include <aclAPI.h>       // For file permissions
 #include <sddl.h>         // For security descriptor strings
 #include <bcrypt.h>       // For secure data generation via entropy
-#pragma comment(lib, "bcrypt.lib") // Links against bcrypt
+#pragma comment(lib, "bcrypt.lib") // Links against bcrypt library
 #endif
 
 #ifdef __APPLE__
@@ -1151,8 +1152,7 @@ void help(char* argv[]) { // The print help functon (At bottom due to size and l
     std::cerr << "    By default, it overwrites the specified files with random data and removes them, ensuring that" << std::endl;
     std::cerr << "    data is unrecoverable. The tool offers various options for customizing the shredding process." << std::endl;
     std::cerr << "    This tool almost conforms to DoD 5220.22-M when the '--secure' flag is used without the '--no-verify' flag, and" << std::endl;
-    std::cerr << "    this tool does not conform due to the unnecessary complexity (which enhances the security of the shred)." << std::endl;
-    std::cerr << "    This program will exit 2 on this dialogue, 1 on failure, and 0 on success.\n" << std::endl;
+    std::cerr << "    this tool does not conform due to the unnecessary complexity (which enhances the security of the shred).\n" << std::endl;
 #ifdef OPENSSL_FOUND
     std::cerr << "    Since this program was compiled with OpenSSL, the file verification function uses SHA256 hashing," << std::endl;
     std::cerr << "    which is more efficient, secure, and accurate for file shredding confirmation.\n" << std::endl;
