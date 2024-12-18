@@ -17,7 +17,7 @@
 */
 /*
 File and Directory Shredder
-Version: 10.4d
+Version: 10.5b
 Author: Aristotle Daskaleas (2024)
 Changelog (since v10):
     -> As of version 10, format of version is now XX.Xx where X ~ [0-9] and x ~ [a-z]
@@ -45,13 +45,16 @@ Changelog (since v10):
     -> Reduced redundancy in namespaces/functions
     -> Fixed overlooked bug pertaining to exit status - implemented a program structure with an error bool and modified end of main() function to incorporate the structure
     -> Removed exit status from program description in the --full-help dialogue
+10.5-> Moved random device to global scope and created a function to reseed it (only if previous generation was over 3 seconds ago)
+    -> Moved global seeding to a class
+    -> Moved parameters section in the --internal flag's pre-start dialogue to after the files to accomodate a large file list
 To-do:
     -> Nothing.
 
 Current full compilation flags: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto
 */
 
-const char VERSION[]{"10.4d"}; // Define program version for later use
+const char VERSION[]{"10.5b"}; // Define program version for later use
 const char CW_YEAR[]{"2024"}; // Define copyright year for later use
 
 #include <iostream>       // For console logging
@@ -226,6 +229,33 @@ public:
     }
 };
 
+class randomizer {
+private:
+    std::random_device rd;
+    std::mt19937 gen;
+    std::chrono::steady_clock::time_point lastSeedTime;
+
+public:
+    randomizer() : gen(rd()), lastSeedTime(std::chrono::steady_clock::now()) {}
+
+    void reseedIfNecessary() {
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - lastSeedTime).count() >= 3) {
+            gen.seed(rd());
+            lastSeedTime = now;
+        }
+    }
+
+    std::mt19937& getGenerator() {
+        reseedIfNecessary();
+        return gen;
+    }
+
+    std::random_device& getDevice() {
+        return rd;
+    }
+};
+
 // Declares structures in global scope so all functions reference the same structure
 config Config;
 wPerm wc;
@@ -233,6 +263,8 @@ internal ic;
 pgrm Program;
 
 std::mutex fileMutex; // Defines file name generation lock
+
+auto lastSeedTime = std::chrono::steady_clock::now(); // Get current seed time
 
 enum logLevel { // Define valid log levels
     INFO, // Level to inform with verbosity (i.e., every action)
@@ -265,8 +297,9 @@ void version(char* argv[]);
 int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize, int pass = 1);
 
 bool shredFile(const fs::path& filePath);
-int hasWritePermission(const fs::path& path);
 bool changePermissions(const std::string &filePath);
+int hasWritePermission(const fs::path& path);
+
 
 void processPath(const fs::path& path);
 void syncFile(const fs::path& filePath);
@@ -293,9 +326,10 @@ int main(int argc, char* argv[]) {
         std::string force_deleteStr{Config.isForce_delete() ? "true" : "false"};
 
         // Prints set options
-        std::cout << "Parameters ~ Overwrites: " << Config.getOverwriteCount() << ", Recursive: " << recursiveStr << ", Keep_files: " << keep_filesStr << ", Follow_symlinks: " << follow_symlinksStr << ", Secure_mode: " << secure_modeStr << ", Dry_run: " << dry_runStr << ", Verify: " << verifyStr << ", Force: " << force_deleteStr << std::endl;
         std::cout << "Files: " << std::endl;
         for (const auto& filePath : fileArgs) { std::cout << filePath << std::endl; } std::cout << std::endl; // Prints file names
+        std::cout << "Parameters ~ Overwrites: " << Config.getOverwriteCount() << ", Recursive: " << recursiveStr << ", Keep_files: " << keep_filesStr << ", Follow_symlinks: " << follow_symlinksStr << ", Secure_mode: " << secure_modeStr << ", Dry_run: " << dry_runStr << ", Verify: " << verifyStr << ", Force: " << force_deleteStr << std::endl << std::endl;
+
         
         // Prompt to continue the script with the printed options / files
         std::cout << "Continue? (y/N)" << std::endl;
@@ -844,6 +878,7 @@ bool shredFile(const fs::path& filePath) {
 
 int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize, int pass) {
     secureRandom rng;
+    randomizer seed;
 
     const std::uintmax_t bufferSize{getOptimalBlockSize()};  // Get the block size
     std::vector<char> buffer(bufferSize); // Set buffer to retrieved value (block size)
@@ -864,8 +899,8 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
     
 
     // Secure random generator
-    std::random_device rd; // Opens a random device
-    std::mt19937 gen(rd()); // Set the random device to generate
+    auto& gen = seed.getGenerator(); // Checks if the generator is ready to be reseeded, if so reseed
+    auto& rd = seed.getDevice(); // Gets the random device
     std::uniform_int_distribution<> dist(0, 255); // Sets even distribution for data generation
     std::vector<unsigned char> lastRandomData(fileSize); // For verification
 
