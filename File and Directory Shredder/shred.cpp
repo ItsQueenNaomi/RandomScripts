@@ -59,7 +59,7 @@ Changelog (since v10):
 To-do:
     -> Nothing.
 
-Current full compilation flags: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto
+Current full compilation flags: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto -pthread
 */
 const char VERSION[]{"10.7b"}; // Define program version for later use
 const char CW_YEAR[]{"2025"}; // Define copyright year for later use
