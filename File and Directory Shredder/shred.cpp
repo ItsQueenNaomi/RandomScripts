@@ -1,6 +1,6 @@
 /*
   File and directory shredder. It shreds files and directories specified on the command line.
-  Copyright (C) 2024  Aristotle Daskaleas
+  Copyright (C) 2025  Aristotle Daskaleas
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -17,8 +17,8 @@
 */
 /*
 File and Directory Shredder
-Version: 10.5b
-Author: Aristotle Daskaleas (2024)
+Version: 10.7a
+Author: Aristotle Daskaleas (2025)
 Changelog (since v10):
     -> As of version 10, format of version is now XX.Xx where X ~ [0-9] and x ~ [a-z]
     -> Added a couple more comments and squashed a bug pertaining to the new uniform initializaion
@@ -48,14 +48,21 @@ Changelog (since v10):
 10.5-> Moved random device to global scope and created a function to reseed it (only if previous generation was over 3 seconds ago)
     -> Moved global seeding to a class
     -> Moved parameters section in the --internal flag's pre-start dialogue to after the files to accomodate a large file list
+10.6-> Implemented OpenSSL secure data generation as a fallback for the secure entropy (i.e., urandom, bcrypt)
+    -> Made OpenSSL Rand as the sole fallback for OpenSSL builds
+    -> Refactored overwriteWithRandomData() for the new OpenSSL fallback with #ifdefs
+    -> The Mersenne Twister fallback is now only implemented on non-OpenSSL builds (In favor of the superior OpenSSL random library).
+    -> Added a boolean to prevent redundant warning messages if the fallback is used
+    -> Changed appearance of error messages.
+10.7-> Added message in help dialogue further detailing program functionality.
+    -> Updated copyright year
 To-do:
     -> Nothing.
 
 Current full compilation flags: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto
 */
-
-const char VERSION[]{"10.5b"}; // Define program version for later use
-const char CW_YEAR[]{"2024"}; // Define copyright year for later use
+const char VERSION[]{"10.7b"}; // Define program version for later use
+const char CW_YEAR[]{"2025"}; // Define copyright year for later use
 
 #include <iostream>       // For console logging
 #include <fstream>        // For file operations (reading/writing)
@@ -102,9 +109,10 @@ const char CW_YEAR[]{"2024"}; // Define copyright year for later use
 
 #ifdef OPENSSL_FOUND
 #include <openssl/evp.h>  // For hashing
-bool isOpenSSL{true}; // Boolean to determine if OpenSSL is found
+#include <openssl/rand.h> // For secure random data generation
+const bool isOpenSSL{true}; // Boolean to determine if OpenSSL is found
 #else
-bool isOpenSSL{false}; // Boolean to determine if OpenSSL is found
+const bool isOpenSSL{false}; // Boolean to determine if OpenSSL is found
 #endif
 
 namespace fs = std::filesystem; // Makes linking commands from the 'std::filesystem' easier
@@ -176,16 +184,19 @@ public:
     const bool& failedWritePerm() const {return failedToRetrievePermissions;} // read-only determination of failedToRetrievePermissions
 };
 
-// Structure with boolean(s) associated with the --internal flag
+// Structure with boolean(s) associated with the --internal flag or script internal booleans
 struct internal {
 private:
     friend bool shredFile(const fs::path& filePath);
     friend int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize, int pass);
 
-    bool bufferSizePrinted{false}; // Global boolean to indicate if the buffer size was already printed
+    bool bufferSizePrinted{false}; // boolean to indicate if the buffer size was already printed
+    bool wasFailedToUrandomPrinted{false}; // boolean to indicate if failure to open urandom was already printed
     void updateBufferPrintStatus(bool value) {bufferSizePrinted = value;}
+    void updateFailedUrandomStatus(bool value) {wasFailedToUrandomPrinted = value;}
 public:
     const bool& wasBufferPrinted() const {return bufferSizePrinted;}
+    const bool& wasFailedUrandomPrinted() const {return wasFailedToUrandomPrinted;}
 };
 
 // Structure with boolean(s) associated with program functionality / success
@@ -213,22 +224,23 @@ public:
             BCRYPT_USE_SYSTEM_PREFERRED_RNG // Use system RNG
         );
         if (status != STATUS_SUCCESS) {
-            throw std::runtime_error("BCryptGenRandom failed to generate secure random data.");
+            throw std::runtime_error("BCryptGenRandom failed to generate secure random data. Attempting fallback " + std::string(isOpenSSL ? "OpenSSL RAND_BYTES..." : "Mersenne Twister..."));
         }
 #else
         std::ifstream urandom("/dev/urandom", std::ios::in | std::ios::binary);
         if (!urandom) {
-            throw std::runtime_error("Failed to open /dev/urandom for secure random data generation.");
+            throw std::runtime_error("Failed to open /dev/urandom for secure random data generation. Attempting fallback " + std::string(isOpenSSL ? "OpenSSL RAND_BYTES..." : "Mersenne Twister..."));
         }
         urandom.read(reinterpret_cast<char*>(buffer.data()), size);
         if (!urandom) {
-            throw std::runtime_error("Failed to read random data from /dev/urandom");
+            throw std::runtime_error("Failed to read random data from /dev/urandom. Attempting fallback " + std::string(isOpenSSL ? "OpenSSL RAND_BYTES..." : "Mersenne Twister..."));
         }
 #endif
         return buffer;
     }
 };
 
+#ifndef OPENSSL_FOUND
 class randomizer {
 private:
     std::random_device rd;
@@ -255,6 +267,35 @@ public:
         return rd;
     }
 };
+#endif
+#ifdef OPENSSL_FOUND
+class secureRandomizer {
+private:
+    std::chrono::steady_clock::time_point lastSeedTime;
+
+    // Generate cryptographically secure random bytes
+    std::vector<unsigned char> generateRandomBytes(size_t size) {
+        std::vector<unsigned char> buffer(size);
+        if (RAND_bytes(buffer.data(), static_cast<int>(size)) != 1) {
+            throw std::runtime_error("Failed to generate secure random bytes using OpenSSL RAND_bytes.");
+        }
+        return buffer;
+    }
+
+public:
+    secureRandomizer() : lastSeedTime(std::chrono::steady_clock::now()) {}
+
+    // Re-seeding isn't explicitly needed with OpenSSL RAND_bytes, but this function is desirable in case this implementation fails
+    std::vector<unsigned char> reseedIfNecessary(const size_t& size) {
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - lastSeedTime).count() >= 3) {
+            // OpenSSL automatically handles reseeding of its entropy pool.
+            lastSeedTime = now;
+        }
+        return generateRandomBytes(size);
+    }
+};
+#endif
 
 // Declares structures in global scope so all functions reference the same structure
 config Config;
@@ -878,10 +919,14 @@ bool shredFile(const fs::path& filePath) {
 
 int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintmax_t fileSize, int pass) {
     secureRandom rng;
+#ifndef OPENSSL_FOUND
     randomizer seed;
-
+#else
+    secureRandomizer srng;
+#endif
     const std::uintmax_t bufferSize{getOptimalBlockSize()};  // Get the block size
     std::vector<char> buffer(bufferSize); // Set buffer to retrieved value (block size)
+    ic.updateFailedUrandomStatus(false); // Reset failed to print data warning for next pass (or file)
 
     // Patterns for DoD compliance and additional security
     std::vector<std::string> patterns{
@@ -897,29 +942,39 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
 
     int securePasses(patterns.size());  // Number of secure passes (to change add/remove from patterns array)
     
-
-    // Secure random generator
-    auto& gen = seed.getGenerator(); // Checks if the generator is ready to be reseeded, if so reseed
-    auto& rd = seed.getDevice(); // Gets the random device
-    std::uniform_int_distribution<> dist(0, 255); // Sets even distribution for data generation
     std::vector<unsigned char> lastRandomData(fileSize); // For verification
-
+#ifndef OPENSSL_FOUND
+        // Secure random generator
+        auto& gen = seed.getGenerator(); // Checks if the generator is ready to be reseeded, if so reseed
+        auto& rd = seed.getDevice(); // Gets the random device
+        std::uniform_int_distribution<> dist(0, 255); // Sets even distribution for data generation
+#endif
     for (std::uintmax_t offset = 0; offset < fileSize; offset += bufferSize) {
-        std::uintmax_t writeSize{std::min(bufferSize, fileSize - offset)}; // Finds writesize
-        
+        std::uintmax_t writeSize{std::min(bufferSize, fileSize - offset)}; // Finds writesize        
         // Generate random data for non-secure or final pass
         if (!Config.isSecure_mode()) {
             std::vector<unsigned char> randomData;
             try {
                 randomData = rng.generate(writeSize);
             } catch (std::runtime_error& e) {
-                logMessage(WARNING, "Failed to generate secure random data: " + std::string(e.what()));
+                if (!ic.wasFailedUrandomPrinted()) {
+                    logMessage(WARNING, std::string(e.what()));
+                    ic.updateFailedUrandomStatus(true);
+                }
+#ifndef OPENSSL_FOUND
                 randomData.resize(writeSize);
                 std::generate(randomData.begin(), randomData.end(), [&](){ return static_cast<char>(dist(gen)); });
+#else
+                try { randomData = srng.reseedIfNecessary(writeSize); } catch (...) { throw; }
+#endif                
             } catch (...) {
                 logMessage(ERROR, "An unknown error occurred when generating secure random data");
+#ifndef OPENSSL_FOUND
                 randomData.resize(writeSize);
                 std::generate(randomData.begin(), randomData.end(), [&](){ return static_cast<char>(dist(gen)); });
+#else
+                try { randomData = srng.reseedIfNecessary(writeSize); } catch (...) { throw; }
+#endif      
             }
             file.seekp(offset); // Moves to offset
             file.write(reinterpret_cast<char*>(randomData.data()), writeSize);  // Writes buffer with retrieved size
@@ -927,9 +982,7 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
         } else {
             std::vector<unsigned char> randomData;
             // Secure shredding mode with multiple patterns (defined and random, plus DoD standards)
-            for (int pass = 0; pass < securePasses; ++pass) {
-                gen.seed(rd() + pass + offset); // Re-seed with the pass and offset
-                
+            for (int pass = 0; pass < securePasses; ++pass) {                             
                 // Apply a pre-set pattern
                 std::memcpy(buffer.data(), patterns[pass].data(), bufferSize); // Copy pattern (number 'pass') to buffer9
                 file.seekp(offset); // Move to offset
@@ -940,13 +993,26 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
                     try {
                         randomData = rng.generate(writeSize);
                     } catch (std::runtime_error& e) {
-                        logMessage(WARNING, "Failed to generate secure random data: " + std::string(e.what()));
+                        if (!ic.wasFailedUrandomPrinted()) {
+                            logMessage(WARNING, std::string(e.what()));
+                            ic.updateFailedUrandomStatus(true);
+                        }
+#ifndef OPENSSL_FOUND
+                        gen.seed(rd() + pass + offset); // Re-seed with the pass and offset
                         randomData.resize(writeSize);
                         std::generate(randomData.begin(), randomData.end(), [&](){ return static_cast<char>(dist(gen)); });
+#else
+                         try { randomData = srng.reseedIfNecessary(writeSize); } catch (...) { throw; }
+#endif 
                     } catch (...) {
                         logMessage(ERROR, "An unknown error occurred when generating secure random data");
+#ifndef OPENSSL_FOUND
+                        gen.seed(rd() + pass + offset); // Re-seed with the pass and offset
                         randomData.resize(writeSize);
                         std::generate(randomData.begin(), randomData.end(), [&](){ return static_cast<char>(dist(gen)); });
+#else
+                         try { randomData = srng.reseedIfNecessary(writeSize); } catch (...) { throw; }
+#endif                         
                     }
                     file.seekp(offset);
                     file.write(reinterpret_cast<char*>(randomData.data()), writeSize);
@@ -965,18 +1031,29 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
             file.write(buffer.data(), writeSize);
 
             // Pass 3: Overwrite with random data
-            //std::generate(buffer.begin(), buffer.end(), [&]() { return static_cast<char>(dist(gen)); }); // Fills buffer with random data
             try {
                 randomData = rng.generate(writeSize);
             } catch (std::runtime_error& e) {
-                logMessage(WARNING, "Failed to generate secure random data: " + std::string(e.what()));
+                if (!ic.wasFailedUrandomPrinted()) {
+                    logMessage(WARNING, std::string(e.what()));
+                    ic.updateFailedUrandomStatus(true);
+                }
+#ifndef OPENSSL_FOUND
                 randomData.resize(writeSize);
                 std::generate(randomData.begin(), randomData.end(), [&](){ return static_cast<char>(dist(gen)); });
+#else
+                try { randomData = srng.reseedIfNecessary(writeSize); } catch (...) { throw; }
+#endif
             } catch (...) {
                 logMessage(ERROR, "An unknown error occurred when generating secure random data");
+#ifndef OPENSSL_FOUND
                 randomData.resize(writeSize);
                 std::generate(randomData.begin(), randomData.end(), [&](){ return static_cast<char>(dist(gen)); });
+#else
+                try { randomData = srng.reseedIfNecessary(writeSize); } catch (...) { throw; }
+#endif
             }
+            if (Config.isVerify()) { std::copy(randomData.begin(), randomData.end(), lastRandomData.begin() + offset); } // Copies for verification
             if (Config.isVerify()) { if (lastRandomData.size() < offset + writeSize) {lastRandomData.resize(offset + writeSize); } std::copy(randomData.begin(), randomData.end(), lastRandomData.begin() + offset); }
             file.seekp(offset);
             file.write(reinterpret_cast<char*>(randomData.data()), writeSize);
@@ -1192,6 +1269,10 @@ void help(char* argv[]) { // The print help functon (At bottom due to size and l
     std::cerr << "    Since this program was compiled with OpenSSL, the file verification function uses SHA256 hashing," << std::endl;
     std::cerr << "    which is more efficient, secure, and accurate for file shredding confirmation.\n" << std::endl;
 #endif
+    std::cerr << "    When deleting the file after shredding, metadata is stripped and the file is moved, renamed, and dereferenced." << std::endl;
+    std::cerr << "    For this reason, shredding with the --keep-files flag is around 9x faster than without. If you are not using a" << std::endl;
+    std::cerr << "    journaling operating system, consider this flag and then use a utility like `rm` to dereference (unlink) it.\n" << std::endl;
+
     std::cerr << "OPTIONS" << std::endl;
     std::cerr << "    -h <help>             Print the short help dialogue and exit" << std::endl;
     std::cerr << "    -H <full-help>        Print this help dialogue and exit" << std::endl;
