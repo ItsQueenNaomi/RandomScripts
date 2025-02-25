@@ -92,7 +92,7 @@ jobs:
       shell: bash
       run: |
         mkdir -p build
-        g++ -std=c++17 -Wall -Wextra -o build/myapp "File and Directory Shredder/shred.cpp" -lssl -lcrypto -pthread
+        g++ -std=c++20 -Wall -Wextra -o build/myapp "File and Directory Shredder/shred.cpp" -lssl -lcrypto -pthread
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
