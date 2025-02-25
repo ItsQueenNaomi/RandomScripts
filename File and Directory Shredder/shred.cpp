@@ -869,7 +869,7 @@ bool shredFile(const fs::path& filePath) {
                       << ((i + 1) / static_cast<float>(Config.getOverwriteCount())) * 100 << "%\r" << std::flush;
         }
 
-        if (Config.isInternal() && verificationFailed || Config.isVerbose() && verificationFailed) { logMessage(WARNING, "Overwrite verification failed for '" + filePath.string() + "' Skipping deletion."); } // Prints verification failure, only if verbose because overwrite function says it too.
+        if ((Config.isInternal() && verificationFailed) || (Config.isVerbose() && verificationFailed)) { logMessage(WARNING, "Overwrite verification failed for '" + filePath.string() + "' Skipping deletion."); } // Prints verification failure, only if verbose because overwrite function says it too.
         file.close(); // Close file, if completed
         syncFile(filePath); // Force filesystem synchronization
 
