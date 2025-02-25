@@ -17,7 +17,7 @@
 */
 /*
 File and Directory Shredder
-Version: 10.7a
+Version: 10.7d
 Author: Aristotle Daskaleas (2025)
 Changelog (since v10):
     -> As of version 10, format of version is now XX.Xx where X ~ [0-9] and x ~ [a-z]
@@ -57,12 +57,13 @@ Changelog (since v10):
 10.7-> Added message in help dialogue further detailing program functionality.
     -> Updated copyright year
     -> Fixed potential undefined behavior exposed with -Wall flag
+    -> Fixed metadata function for true linux support
 To-do:
     -> Nothing.
 
-Current full compilation flags: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto -pthread
+Current full compilation flags: -std=c++20 -DOPENSSL_FOUND -L/path/to/openssl/lib -I/path/to/openssl/include -lssl -lcrypto
 */
-const char VERSION[]{"10.7b"}; // Define program version for later use
+const char VERSION[]{"10.7d"}; // Define program version for later use
 const char CW_YEAR[]{"2025"}; // Define copyright year for later use
 
 #include <iostream>       // For console logging
@@ -435,7 +436,7 @@ std::vector<std::string> parseArguments(int argc, char* argv[]) {
                 } catch (...) {
                     errorExit(1, nfMsg);
                 }
-            } else if (j + 1 < argc) {
+            } else if (j + 1 < static_cast<size_t>(argc)) {
                 try {
                     Config.updateCount(std::stoi(argv[++j]));
                 } catch (...) {
@@ -691,12 +692,24 @@ void cleanupMetadata(std::string& filePath) {
     }
 #else
     try {
+#ifdef __APPLE__
         ssize_t len{listxattr(filePath.c_str(), nullptr, 0, 0)}; // Retrieves length of attributes
+#else
+        ssize_t len{listxattr(filePath.c_str(), nullptr, 0)}; // Retrieves length of attributes
+#endif
         if (len > 0) { // Iterates through file attributes and removes them
             std::vector<char> attrs(len); // Dynamically allocates attribution size to size of len
+#ifdef __APPLE__
             len = listxattr(filePath.c_str(), attrs.data(), attrs.size(), 0); // Gets length again and writes data to attrs variable
+#else
+            len = listxattr(filePath.c_str(), attrs.data(), attrs.size()); // Gets length again and writes data to attrs variable
+#endif
             for (ssize_t i = 0; i < len; i += strlen(&attrs[i]) + 1) { // Iterates 'len' times though 'attrs'
+#ifdef __APPLE__
                 removexattr(filePath.c_str(), &attrs[i], 0); // Remove attr number 'i'
+#else
+                removexattr(filePath.c_str(), &attrs[i]); // Remove attr number 'i'
+#endif
             }
         }
     } catch (...) {
