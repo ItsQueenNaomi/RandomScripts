@@ -56,6 +56,7 @@ Changelog (since v10):
     -> Changed appearance of error messages.
 10.7-> Added message in help dialogue further detailing program functionality.
     -> Updated copyright year
+    -> Fixed potential undefined behavior exposed with -Wall flag
 To-do:
     -> Nothing.
 
