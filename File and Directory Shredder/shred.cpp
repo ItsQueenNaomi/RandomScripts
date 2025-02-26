@@ -249,9 +249,6 @@ private:
     std::mt19937 gen;
     std::chrono::steady_clock::time_point lastSeedTime;
 
-public:
-    randomizer() : gen(rd()), lastSeedTime(std::chrono::steady_clock::now()) {}
-
     void reseedIfNecessary() {
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - lastSeedTime).count() >= 3) {
@@ -259,6 +256,9 @@ public:
             lastSeedTime = now;
         }
     }
+
+public:
+    randomizer() : gen(rd()), lastSeedTime(std::chrono::steady_clock::now()) {}
 
     std::mt19937& getGenerator() {
         reseedIfNecessary();
