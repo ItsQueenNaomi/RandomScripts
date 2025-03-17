@@ -496,14 +496,16 @@ void generateKeyedSBox(const std::vector<uint8_t>& key, uint8_t sbox[256]) {
 // ------------------- Main Function -------------------
 
 int main(int argc, char* argv[]) {
-    // Get key from command line argument or use a default.
     if (argc > 1) {
-        if (argv[1] == "-h") {
-            std::cerr << "Usage: " << argv[0] << " [\"Key\"]" << std::endl << std::endl;
+        if (strcmp(argv[1], "-h") == 0 || strncmp(argv[1], "-help", 5) == 0 || strncmp(argv[1], "--help", 6) == 0) {
+            std::cerr << "Usage: " << argv[0] << " [\"Key\"]" << std::endl;
+            std::cerr << "If \"Key\" is not specified, the default one will be used." << std::endl << std::endl;
             std::cerr << "Algebraically Secure (Key-Dependent) Substitution Box Generator" << std::endl;
             std::cerr << "Copyright (C) 2025 Aristotle Daskaleas" << std::endl;
+            return 1;
         }
     }
+    // Get key from command line argument or use a default.
     std::string keyStr = (argc > 1) ? argv[1] : "f3747742fb15d353162ebed3ba8d40943b8c222312889630c27261420094f3598c5e77cd9e189cbf66d36b64c847a4555ce16ee9bd650e393e56423f33c49139f5f40a6b3804c49fc9c17dc5cc66be9e3bafdce614072b463a23ec6b0f1654fa35397620865254715b9752514451d06207d523dcb282ef80133192ba491210a9";
     std::vector<uint8_t> key(keyStr.begin(), keyStr.end());
     
