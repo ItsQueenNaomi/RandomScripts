@@ -792,7 +792,7 @@ bool shredFile(const fs::path& filePath) {
             if (fs::is_symlink(filePath) && !Config.isFollow_symlinks()) { // Iterates through options for a reliable file iteration
                 logMessage(DRY_RUN, "Symlink file '" + filePath.string() + "' would not be shredded.");
             } else {
-            logMessage(DRY_RUN, "Simulating shredding file '" + filePath.string() + "'");
+            logMessage(DRY_RUN, "File '" + filePath.string() + "' would be shredded.");
             }
             
             return true;
@@ -948,10 +948,10 @@ int overwriteWithRandomData(std::string filePath, std::fstream& file, std::uintm
         std::string(bufferSize, '\xFF'),  // Pass of 0xFF (11111111 in binary)
         std::string(bufferSize, '\xAA'),  // Pass of 0xAA (10101010 in binary)
         std::string(bufferSize, '\x55'),  // Pass of 0x55 (01010101 in binary)
-        std::string(bufferSize, '\x3D'),  // Pass of 0x3D (00111101 in binary)
-        std::string(bufferSize, '\xC2'),  // Pass of 0xC2 (11000010 in binary)
-        std::string(bufferSize, '\x8E'),  // Pass of 0x8E (10001110 in binary)
-        std::string(bufferSize, '\x4E')   // Pass of 0x4E (01001110 in binary)
+        std::string(bufferSize, '\x0F'),  // Pass of 0x0F (00001111 in binary)
+        std::string(bufferSize, '\xF0'),  // Pass of 0xF0 (11110000 in binary)
+        std::string(bufferSize, '\xCC'),  // Pass of 0xCC (11001100 in binary)
+        std::string(bufferSize, '\x33')   // Pass of 0x33 (00110011 in binary)
     };
 
     int securePasses(patterns.size());  // Number of secure passes (to change add/remove from patterns array)
